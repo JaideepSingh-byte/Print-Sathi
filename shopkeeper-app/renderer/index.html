@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Print-Sathi | Unattended Station Console</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="console-container">
+    <!-- 1. TOP HEADER -->
+    <header class="console-header">
+      <div class="brand-box">
+        <div class="brand-logo">🖨️</div>
+        <div>
+          <h1 class="brand-name">PrintSathi <span>DeskConsole</span></h1>
+          <p class="brand-sub">Unattended Campus Spooler • Station Client</p>
+        </div>
+      </div>
+
+      <div class="header-badges">
+        <div id="firebaseBadge" class="badge badge-success">
+          <span class="dot pulse"></span>
+          <span id="firebaseStatusText">Firebase: Connected</span>
+        </div>
+        <div id="modeBadge" class="badge badge-warning">
+          <span>🛡️ DRY-RUN: Virtual Spooling</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- 2. CONTROL CENTER BAR -->
+    <section class="control-panel">
+      <!-- Printer Selector -->
+      <div class="control-group">
+        <label for="printerSelect">Local Windows Printer</label>
+        <select id="printerSelect" class="styled-select">
+          <option value="">Detecting Windows printers...</option>
+        </select>
+      </div>
+
+      <!-- Auto-Print Toggle -->
+      <div class="control-group">
+        <label>Automatic Queue Consumption</label>
+        <button id="toggleAutoPrintBtn" class="toggle-btn active">
+          <span class="toggle-icon">⚡</span>
+          <span id="autoPrintText">Auto-Print: ON</span>
+        </button>
+      </div>
+
+      <!-- Dry-Run Toggle -->
+      <div class="control-group">
+        <label>Print Safety Mode</label>
+        <button id="toggleDryRunBtn" class="toggle-btn dryrun-active">
+          <span class="toggle-icon">🛡️</span>
+          <span id="dryRunText">Dry-Run: ON (Safe)</span>
+        </button>
+      </div>
+
+      <!-- Quick Actions -->
+      <div class="control-group" style="margin-left: auto;">
+        <label>Emergency & Tools</label>
+        <div class="btn-row">
+          <button id="pauseQueueBtn" class="action-btn warning-btn" title="Pause / Resume Queue Processing">
+            ⏸️ Pause
+          </button>
+          <button id="openFolderBtn" class="action-btn" title="Open OS Temp Spool Folder">
+            📁 Spool Folder
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3. CURRENTLY PRINTING ACTIVE HERO (Hidden if idle) -->
+    <section id="activeJobSection" class="active-job-card hidden">
+      <div class="active-job-header">
+        <div class="spinner"></div>
+        <div>
+          <span class="active-job-pill">CURRENTLY PRINTING</span>
+          <h2 id="activeJobTitle" class="active-job-title">Processing Order #PS-0000</h2>
+        </div>
+      </div>
+      <div class="active-job-specs">
+        <span id="activeJobFile" class="spec-tag">📄 document.pdf</span>
+        <span id="activeJobCopies" class="spec-tag">📑 1 Copy</span>
+        <span id="activeJobColor" class="spec-tag">🎨 B&W</span>
+        <span id="activeJobSides" class="spec-tag">🔄 Single-Sided</span>
+        <span id="activeJobPages" class="spec-tag">📊 All Pages</span>
+      </div>
+    </section>
+
+    <!-- 4. MAIN SPLIT CONTENT (Queue on left, Live Log on right) -->
+    <main class="main-split">
+      <!-- Left: Incoming Live Queue -->
+      <div class="queue-panel">
+        <div class="panel-title-bar">
+          <div class="title-with-counter">
+            <button id="tabPendingBtn" class="tab-pill active">Pending (<span id="queueCount">0</span>)</button>
+            <button id="tabCompletedBtn" class="tab-pill">Completed (<span id="completedCount">0</span>)</button>
+          </div>
+          <span id="queueSubtext" class="subtext">Auto-processed in FIFO order</span>
+        </div>
+
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Token</th>
+                <th>Document</th>
+                <th>Copies / Mode</th>
+                <th>Sides</th>
+                <th>Received</th>
+              </tr>
+            </thead>
+            <tbody id="queueTableBody">
+              <tr class="empty-row">
+                <td colspan="5">
+                  <div class="empty-state">
+                    <span class="empty-icon">☕</span>
+                    <p>Queue is empty. Waiting for student paid print jobs...</p>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Right: Real-time Spooler Activity Logs -->
+      <div class="logs-panel">
+        <div class="panel-title-bar">
+          <h3>System Audit & Spooler Feed</h3>
+          <button id="clearLogsBtn" class="link-btn">Clear Feed</button>
+        </div>
+        <div id="logFeed" class="terminal-feed">
+          <!-- Dynamically populated log entries -->
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
