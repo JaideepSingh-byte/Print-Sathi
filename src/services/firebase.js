@@ -41,6 +41,7 @@ import {
   getStorage, 
   ref, 
   uploadBytes, 
+  uploadBytesResumable,
   getDownloadURL 
 } from 'firebase/storage';
 import {
@@ -106,6 +107,11 @@ if (isFirebaseConfigured) {
     const app = !getApps().length ? initializeApp(firebaseConfig) : getApps()[0];
     dbInstance = getFirestore(app);
     storageInstance = getStorage(app);
+    if (storageInstance) {
+      // Bound max retry time to 2.5s so Firebase Storage SDK does not stall the app on network/bucket errors
+      storageInstance.maxUploadRetryTime = 2500;
+      storageInstance.maxOperationRetryTime = 2500;
+    }
     authInstance = getAuth(app);
     console.log('🔥 [Print-Sathi] Firebase initialized for project:', firebaseConfig.projectId);
   } catch (error) {
@@ -561,52 +567,212 @@ export async function updateShopStatus(shopId, status, rejectionReason = '') {
  */
 
 /**
+ * Safely converts a File/Blob to a Base64 Data URL for direct Firestore payload synchronization
+ */
+export function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    if (!file) return reject(new Error('No file provided for Base64 conversion.'));
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('Failed to read document into memory.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+/**
+ * Session-level cache for Cloud Storage reachability
+ * Prevents repeating slow network timeouts on every document when a bucket is unprovisioned.
+ */
+let storageAvailabilityCache = {
+  tested: false,
+  available: false,
+  testedAt: 0,
+  errorCode: null,
+};
+
+/**
+ * Probes Cloud Storage health and connectivity
+ */
+export async function checkStorageHealth() {
+  if (!isFirebaseConfigured || !storage) {
+    return { configured: false, reachable: false, reason: 'Firebase or Storage not initialized' };
+  }
+  const probeStart = Date.now();
+  try {
+    const probeRef = ref(storage, '.health_check');
+    const dummy = new Uint8Array([0x25, 0x50, 0x44, 0x46]); // %PDF
+    const probeTask = uploadBytesResumable(probeRef, dummy, { contentType: 'application/pdf' });
+    await withTimeout(probeTask, 2500, 'Storage health probe timed out after 2.5s');
+    storageAvailabilityCache = { tested: true, available: true, testedAt: Date.now(), errorCode: null };
+    return { configured: true, reachable: true, bucket: firebaseConfig.storageBucket, elapsedMs: Date.now() - probeStart };
+  } catch (err) {
+    storageAvailabilityCache = { tested: true, available: false, testedAt: Date.now(), errorCode: err.code || 'storage/unknown' };
+    return {
+      configured: true,
+      reachable: false,
+      bucket: firebaseConfig.storageBucket,
+      errorCode: err.code || 'storage/unknown',
+      errorMessage: err.message,
+      elapsedMs: Date.now() - probeStart,
+    };
+  }
+}
+
+/**
  * Submits a multi-file print order targeting `orders/{orderId}` and dual-writing
  * to `print_jobs/{orderId}` for legacy desktop backwards compatibility.
  * 
- * @param {object} orderConfig - { shopId, studentIdentifier, pickupCounter }
+ * @param {object} orderConfig - { shopId, studentIdentifier, pickupCounter, pricingSnapshot }
  * @param {Array<object>} filesList - Array of { file, name, size, totalPages, calculatedPages, copies, colorMode, sides, pageRangeMode, pageRangeString }
+ * @param {function} onProgress - Progress reporter callback
  */
-export async function submitMultiFileOrder(orderConfig, filesList) {
+export async function submitMultiFileOrder(orderConfig, filesList, onProgress) {
+  if (!Array.isArray(filesList) || filesList.length === 0) {
+    throw new Error('No documents uploaded. Please select at least one PDF file.');
+  }
+
+  const orderStartTime = Date.now();
   const { token, orderId } = generateTokenId();
   const shopId = orderConfig.shopId || 'shop_main_xerox';
   const pickupCounter = orderConfig.pickupCounter || 'Counter 1 (Main Xerox Center)';
 
-  // Calculate strict pricing snapshot
-  const pricingSnapshot = calculateOrderPricing(filesList, orderConfig.shopPricing || null);
+  console.log(`\n================================================================`);
+  console.log(`⏱️ [PRINT-SATHI TIMING TRACE] Order #${orderId} (Token: #${token})`);
+  console.log(`📁 Files in batch: ${filesList.length} | Target Shop: ${shopId}`);
+  console.log(`================================================================`);
 
-  // Process and upload files (with 3.5s timeout guard per file)
+  // Calculate strict pricing snapshot (or use validated pre-calculated snapshot)
+  const pricingSnapshot = orderConfig.pricingSnapshot || calculateOrderPricing(filesList, orderConfig.shopPricing || null);
+
+  // Process and upload files
   const processedFiles = [];
   let anyStorageUploaded = false;
 
   for (let i = 0; i < filesList.length; i++) {
     const item = filesList[i];
     const fileObj = item.rawFile || item.file;
+    const fileSize = fileObj ? fileObj.size : (item.size || 0);
+    const fileName = fileObj ? fileObj.name : (item.name || `file_${i + 1}.pdf`);
     let fileUrl = '';
+    let isCloudUploaded = false;
+    let uploadMethod = 'NONE';
+    const fileStartTime = Date.now();
 
-    if (fileObj) {
-      fileUrl = URL.createObjectURL(fileObj);
+    console.log(`\n[Stage 1: File ${i + 1}/${filesList.length}] "${fileName}"`);
+    console.log(` - Raw Size: ${fileSize} bytes (${(fileSize / 1024).toFixed(1)} KB, ${(fileSize / (1024 * 1024)).toFixed(2)} MB)`);
+
+    if (onProgress && fileObj) {
+      onProgress(`Preparing "${fileName}" (${i + 1}/${filesList.length})...`);
     }
 
-    if (isFirebaseConfigured && storage && fileObj) {
+    // 1. Attempt Cloud Storage upload with bounded timeout and progress tracking.
+    // If storage was already tested and confirmed unprovisioned/unavailable in this session,
+    // and the file is small (<= 750 KB), skip the futile network timeout!
+    const shouldAttemptStorage = Boolean(
+      isFirebaseConfigured && 
+      storage && 
+      fileObj && 
+      (storageAvailabilityCache.available || !storageAvailabilityCache.tested || fileSize > 750 * 1024)
+    );
+
+    if (shouldAttemptStorage) {
+      const storageStart = Date.now();
+      const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const storagePath = `orders/${orderId}/${safeName}`;
+      console.log(`☁️ [Cloud Storage Attempt] Path: gs://${firebaseConfig.storageBucket}/${storagePath}`);
+      uploadMethod = 'Firebase Cloud Storage (Resumable)';
+
       try {
-        console.log(`📤 [Storage] Uploading file ${i + 1}/${filesList.length}: ${fileObj.name}...`);
-        const storageRef = ref(storage, `orders/${orderId}/${fileObj.name}`);
-        const uploadTask = uploadBytes(storageRef, fileObj, { contentType: 'application/pdf' });
-        const result = await withTimeout(uploadTask, 3500, 'Storage upload timed out');
+        const storageRef = ref(storage, storagePath);
+        const uploadTask = uploadBytesResumable(storageRef, fileObj, { contentType: 'application/pdf' });
+
+        uploadTask.on('state_changed', (snap) => {
+          if (snap.totalBytes > 0 && onProgress) {
+            const pct = Math.round((snap.bytesTransferred / snap.totalBytes) * 100);
+            onProgress(`Uploading "${fileName}": ${pct}% (${(snap.bytesTransferred / 1024).toFixed(0)} KB / ${(snap.totalBytes / 1024).toFixed(0)} KB)`);
+          }
+        });
+
+        // Bounded timeout: 3.5s connection budget for small files, scaled for larger files
+        const timeoutMs = Math.max(3500, Math.ceil((fileSize / (1024 * 1024)) * 3000) + 2500);
+        const result = await withTimeout(
+          uploadTask,
+          timeoutMs,
+          `Storage upload timed out after ${(timeoutMs / 1000).toFixed(1)}s`
+        );
+
+        const urlStart = Date.now();
         fileUrl = await getDownloadURL(result.ref);
+        const urlElapsed = Date.now() - urlStart;
+        const uploadElapsed = Date.now() - storageStart;
+
+        isCloudUploaded = true;
         anyStorageUploaded = true;
+        storageAvailabilityCache = { tested: true, available: true, testedAt: Date.now(), errorCode: null };
+
+        console.log(`✅ [Storage Upload Succeeded] In ${uploadElapsed} ms (URL fetch: ${urlElapsed} ms)`);
+        console.log(`🔗 [Download URL]: ${fileUrl}`);
       } catch (storageErr) {
-        console.warn(`ℹ️ [Storage Skipped] ${storageErr.message}. Continuing with local preview URL.`);
+        const uploadElapsed = Date.now() - storageStart;
+        storageAvailabilityCache = {
+          tested: true,
+          available: false,
+          testedAt: Date.now(),
+          errorCode: storageErr.code || 'storage/unknown'
+        };
+        console.warn(`❌ [Storage Upload Failed] After ${uploadElapsed} ms | Code: ${storageErr.code} | Message: ${storageErr.message}`);
+      }
+    } else if (fileObj && fileSize <= 750 * 1024) {
+      console.log(`⚡ [Storage Fast-Bypass] Skipping known unprovisioned Cloud Storage bucket for small document (${(fileSize / 1024).toFixed(1)} KB)`);
+    }
+
+    // 2. Resilient Direct Firestore Sync: If Cloud Storage is unprovisioned or failed
+    if (!isCloudUploaded && fileObj) {
+      if (fileSize <= 750 * 1024) {
+        // Files <= 750 KB fit comfortably within Firestore's 1 MiB document limit
+        uploadMethod = 'Campus Direct Sync (Base64)';
+        const b64Start = Date.now();
+        if (onProgress) {
+          onProgress(`Direct campus sync for "${fileName}" (${(fileSize / 1024).toFixed(0)} KB)...`);
+        }
+        try {
+          fileUrl = await fileToBase64(fileObj);
+          const b64Elapsed = Date.now() - b64Start;
+          console.log(`📦 [Direct Sync Completed] In ${b64Elapsed} ms | Payload length: ${fileUrl.length} characters`);
+        } catch (b64Err) {
+          console.warn('Base64 conversion failed:', b64Err);
+        }
+      } else {
+        // File is larger than 750 KB and Cloud Storage failed
+        const fileSizeMB = (fileSize / (1024 * 1024)).toFixed(2);
+        const fileSizeKB = (fileSize / 1024).toFixed(1);
+        throw new Error(
+          `Document "${fileName}" (${fileSizeKB} KB / ${fileSizeMB} MB) could not be uploaded to Cloud Storage. ` +
+          `Firebase Cloud Storage bucket "${firebaseConfig.storageBucket}" is not provisioned in project "${firebaseConfig.projectId}" (Error: ${storageAvailabilityCache.errorCode || 'storage/unknown'}). ` +
+          `Firestore documents have a strict 1 MiB limit, so documents over 750 KB cannot use direct sync. ` +
+          `Please enable Cloud Storage in Firebase Console (Build > Storage > Get Started).`
+        );
       }
     }
+
+    if (!fileUrl && fileObj) {
+      throw new Error(`Could not generate an accessible document URL for "${fileName}". Order aborted.`);
+    }
+
+    if (fileUrl.startsWith('blob:')) {
+      throw new Error(`Invalid local blob URL for "${fileName}". Local blob URLs cannot be downloaded by remote desktop stations.`);
+    }
+
+    const fileTotalElapsed = Date.now() - fileStartTime;
+    console.log(`✨ [File ${i + 1} Ready] Method: ${uploadMethod} | Total file prep time: ${fileTotalElapsed} ms`);
 
     const itemPricing = pricingSnapshot.items[i] || {};
     processedFiles.push({
       fileId: `file_${i + 1}_${Date.now()}`,
-      fileName: item.name || fileObj?.name || `document_${i + 1}.pdf`,
-      fileSize: item.size || fileObj?.size || 0,
+      fileName: fileName,
+      fileSize: fileSize,
       fileUrl,
+      previewUrl: fileObj && typeof URL !== 'undefined' ? URL.createObjectURL(fileObj) : '',
       totalPages: item.totalPages || 1,
       calculatedPages: item.calculatedPages || 1,
       pageRangeMode: item.pageRangeMode || 'all',
@@ -616,7 +782,13 @@ export async function submitMultiFileOrder(orderConfig, filesList) {
       sides: item.sides || 'single',
       ratePerPage: itemPricing.ratePerPage || (item.colorMode === 'color' ? 8 : 2),
       itemTotal: itemPricing.itemTotal || 0,
+      uploadMethod,
     });
+  }
+
+  // 3. Registering order in Firestore
+  if (onProgress) {
+    onProgress('Registering order in campus print queue...');
   }
 
   const orderPayload = {
@@ -641,10 +813,11 @@ export async function submitMultiFileOrder(orderConfig, filesList) {
   };
 
   let firestoreSaved = false;
+  const dbStartTime = Date.now();
 
   if (isFirebaseConfigured && db) {
     try {
-      console.log(`📝 [Firestore] Saving multi-file order ${orderId} to 'orders' collection...`);
+      console.log(`\n📝 [Stage 2: Firestore Write] Saving order #${orderId} to 'orders' collection...`);
       const orderRef = doc(db, 'orders', orderId);
       await withTimeout(
         setDoc(orderRef, orderPayload),
@@ -652,7 +825,8 @@ export async function submitMultiFileOrder(orderConfig, filesList) {
         'Firestore order creation timed out'
       );
       firestoreSaved = true;
-      console.log(`🎉 [Firestore] Successfully saved multi-file order ${orderId}!`);
+      const dbElapsed = Date.now() - dbStartTime;
+      console.log(`🎉 [Firestore Write Success] Saved in ${dbElapsed} ms!`);
 
       // Dual-write legacy record to 'print_jobs' for backward compatibility
       try {
@@ -671,10 +845,10 @@ export async function submitMultiFileOrder(orderConfig, filesList) {
           ratePerPage: firstFile.ratePerPage || 2,
         });
       } catch (legacyErr) {
-        console.warn('Legacy print_jobs dual-write non-critical error:', legacyErr.message);
+        console.warn('Legacy print_jobs dual-write non-critical notice:', legacyErr.message);
       }
     } catch (firestoreErr) {
-      console.warn('⚠️ [Firestore Warning] Could not reach cloud:', firestoreErr.message);
+      console.warn('⚠️ [Firestore Notice] Could not reach cloud:', firestoreErr.message);
     }
   }
 
@@ -695,6 +869,11 @@ export async function submitMultiFileOrder(orderConfig, filesList) {
   } catch (err) {
     console.warn(err);
   }
+
+  const totalOrderElapsed = Date.now() - orderStartTime;
+  console.log(`\n================================================================`);
+  console.log(`🏁 [ORDER COMPLETE] Token: #${token} | Total Duration: ${totalOrderElapsed} ms`);
+  console.log(`================================================================\n`);
 
   return {
     success: true,

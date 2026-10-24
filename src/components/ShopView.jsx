@@ -7,7 +7,7 @@
  * pricing, and queue submission.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import UploadZone from './UploadZone';
 import PrintConfig from './PrintConfig';
@@ -15,6 +15,7 @@ import PriceBreakdown from './PriceBreakdown';
 import PaymentModal from './PaymentModal';
 import OrderConfirmation from './OrderConfirmation';
 import { getShopById, submitMultiFileOrder } from '../services/firebase';
+import { calculateOrderPricing } from '../utils/pricingEngine';
 
 export default function ShopView({ onOrderCreated }) {
   const { shopId } = useParams();
@@ -34,8 +35,9 @@ export default function ShopView({ onOrderCreated }) {
   const [sides, setSides] = useState('single');
   const [calculatedPages, setCalculatedPages] = useState(1);
 
-  // Modal & Order Confirmation State
+  // Modal, Error & Order Confirmation State
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
+  const [paymentError, setPaymentError] = useState(null);
   const [currentOrder, setCurrentOrder] = useState(null);
 
   useEffect(() => {
@@ -53,11 +55,26 @@ export default function ShopView({ onOrderCreated }) {
     loadTargetShop();
   }, [shopId]);
 
-  const handleProceedToPayment = () => {
+  // Unified, authoritative order pricing snapshot (Single Source of Truth)
+  const pricingSnapshot = useMemo(() => {
+    return calculateOrderPricing(filesList, shop?.pricingTiers || null);
+  }, [filesList, shop]);
+
+  const handleProceedToPayment = (validatedAmount, snapshot) => {
+    if (!filesList || filesList.length === 0) {
+      alert('Please upload at least one PDF document before proceeding.');
+      return;
+    }
+    const finalAmount = typeof validatedAmount === 'number' ? validatedAmount : pricingSnapshot.totalAmount;
+    if (finalAmount <= 0) {
+      alert('Order total must be greater than ₹0.');
+      return;
+    }
+    setPaymentError(null);
     setIsPaymentModalOpen(true);
   };
 
-  const handleConfirmPayment = async () => {
+  const handleConfirmPayment = async (onProgress) => {
     const pickupCounter = shop 
       ? `${shop.name} (${shop.location?.building || 'Campus Plaza'}, ${shop.location?.floor || 'Ground'})` 
       : 'Counter 1 (Main Student Plaza)';
@@ -66,16 +83,28 @@ export default function ShopView({ onOrderCreated }) {
       shopId: shop?.shopId || shopId,
       pickupCounter,
       shopPricing: shop?.pricingTiers || null,
+      pricingSnapshot, // Pass strict validated pricing snapshot
     };
 
-    const result = await submitMultiFileOrder(orderConfig, filesList);
+    setPaymentError(null);
+    try {
+      const result = await submitMultiFileOrder(orderConfig, filesList, onProgress);
 
-    if (result.success) {
-      setCurrentOrder(result.order);
-      if (onOrderCreated) {
-        onOrderCreated(result.order);
+      if (result.success) {
+        setCurrentOrder(result.order);
+        if (onOrderCreated) {
+          onOrderCreated(result.order);
+        }
+        setIsPaymentModalOpen(false);
+      } else {
+        const errorMsg = result.error || 'Unknown error occurred during order submission.';
+        setPaymentError(errorMsg);
+        throw new Error(errorMsg);
       }
-      setIsPaymentModalOpen(false);
+    } catch (err) {
+      console.error('Order submission error:', err);
+      setPaymentError(err.message);
+      throw err; // Re-throw to PaymentModal so the spinner halts and the error banner is displayed
     }
   };
 
@@ -110,49 +139,21 @@ export default function ShopView({ onOrderCreated }) {
   return (
     <div>
       {/* Top Counter Bar */}
-      <div style={{
-        background: 'linear-gradient(90deg, #1e1b4b 0%, #1e293b 100%)',
-        border: '1px solid #312e81',
-        borderRadius: '12px',
-        padding: '1rem 1.25rem',
-        marginBottom: '1.5rem',
-        display: 'flex',
-        flexWrap: 'wrap',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        gap: '0.75rem'
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
-          <div style={{
-            width: '42px',
-            height: '42px',
-            borderRadius: '10px',
-            background: '#4f46e5',
-            color: '#fff',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            fontSize: '1.25rem'
-          }}>
+      <div className="shop-view-counter-bar">
+        <div className="counter-info-group">
+          <div className="counter-icon-box">
             🖨️
           </div>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <h3 style={{ fontSize: '1.15rem', fontWeight: '700', color: '#f8fafc', margin: 0 }}>
+          <div className="counter-meta">
+            <div className="counter-title-row">
+              <h3 className="counter-view-name">
                 {shop?.name || 'Campus Print Counter'}
               </h3>
-              <span style={{
-                fontSize: '0.7rem',
-                background: shop?.isAcceptingOrders !== false ? '#065f46' : '#991b1b',
-                color: '#fff',
-                padding: '0.15rem 0.5rem',
-                borderRadius: '999px',
-                fontWeight: '600'
-              }}>
+              <span className={`counter-status-pill ${shop?.isAcceptingOrders !== false ? 'open' : 'paused'}`}>
                 {shop?.isAcceptingOrders !== false ? 'OPEN' : 'PAUSED'}
               </span>
             </div>
-            <p style={{ fontSize: '0.8rem', color: '#cbd5e1', margin: '0.2rem 0 0' }}>
+            <p className="counter-view-subtext">
               📍 {shop?.location?.building || 'Main Campus'}, {shop?.location?.floor || 'Floor 1'} &bull; {shop?.location?.room || 'Counter'}
             </p>
           </div>
@@ -160,9 +161,8 @@ export default function ShopView({ onOrderCreated }) {
 
         <button
           type="button"
-          className="secondary-action-btn"
+          className="secondary-action-btn switch-counter-btn"
           onClick={() => navigate('/')}
-          style={{ fontSize: '0.82rem', padding: '0.45rem 0.85rem' }}
         >
           ← Switch Counter
         </button>
@@ -175,6 +175,7 @@ export default function ShopView({ onOrderCreated }) {
           <UploadZone
             filesList={filesList}
             setFilesList={setFilesList}
+            shopPricing={shop?.pricingTiers || null}
           />
 
           {/* Step 2: Print Configuration */}
@@ -194,6 +195,7 @@ export default function ShopView({ onOrderCreated }) {
             setCalculatedPages={setCalculatedPages}
             isFileActive={filesList.length > 0}
             supportedServices={shop?.supportedServices}
+            shopPricing={shop?.pricingTiers || null}
           />
         </div>
 
@@ -201,6 +203,7 @@ export default function ShopView({ onOrderCreated }) {
         <PriceBreakdown
           filesList={filesList}
           shop={shop}
+          pricingSnapshot={pricingSnapshot}
           onProceedToPayment={handleProceedToPayment}
         />
       </div>
@@ -208,11 +211,14 @@ export default function ShopView({ onOrderCreated }) {
       {/* Payment Simulation Modal */}
       <PaymentModal
         isOpen={isPaymentModalOpen}
-        onClose={() => setIsPaymentModalOpen(false)}
-        totalAmount={
-          filesList.reduce((acc, f) => acc + (f.itemTotal || 0), 0)
-        }
+        onClose={() => {
+          setIsPaymentModalOpen(false);
+          setPaymentError(null);
+        }}
+        totalAmount={pricingSnapshot.totalAmount}
+        pricingSnapshot={pricingSnapshot}
         onConfirmPayment={handleConfirmPayment}
+        error={paymentError}
       />
     </div>
   );

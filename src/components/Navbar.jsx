@@ -13,90 +13,83 @@ export default function Navbar({ ordersCount = 0 }) {
 
   const isActive = (path) => location.pathname === path;
 
+  const statusBadge = isFirebaseConfigured ? (
+    <div 
+      className="campus-pill firebase-active" 
+      title="Connected to Firebase Cloud Firestore"
+    >
+      <span className="status-dot"></span>
+      <span className="status-text-full"><a href="/">🏠 Home</a></span>
+      <span className="status-text-mobile"><a href="/">🏠 Home</a></span>
+    </div>
+  ) : (
+    <div 
+      className="campus-pill demo-active" 
+      title="Running in local simulation mode"
+    >
+      
+    </div>
+  );
+
   return (
     <header className="navbar">
       <div className="navbar-inner">
-        {/* Brand Logo & Title */}
-        <Link to="/" style={{ textDecoration: 'none', color: 'inherit' }}>
-          <div className="brand-wrapper" role="button" tabIndex={0}>
-            <div className="brand-icon">
-              <svg 
-                width="24" 
-                height="24" 
-                viewBox="0 0 24 24" 
-                fill="none" 
-                stroke="currentColor" 
-                strokeWidth="2.2" 
-                strokeLinecap="round" 
-                strokeLinejoin="round"
-              >
-                <polyline points="6 9 6 2 18 2 18 9" />
-                <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" />
-                <rect x="6" y="14" width="12" height="8" />
-              </svg>
+        {/* Row 1 on Mobile: Brand on Left, Status Badge on Right */}
+        <div className="navbar-brand-section">
+          <Link to="/" style={{ textDecoration: 'none', color: 'inherit' }}>
+            <div className="brand-wrapper" role="button" tabIndex={0}>
+              <div className="brand-icon">
+                <svg 
+                  width="22" 
+                  height="22" 
+                  viewBox="0 0 24 24" 
+                  fill="none" 
+                  stroke="currentColor" 
+                  strokeWidth="2.2" 
+                  strokeLinecap="round" 
+                  strokeLinejoin="round"
+                >
+                  <polyline points="6 9 6 2 18 2 18 9" />
+                  <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" />
+                  <rect x="6" y="14" width="12" height="8" />
+                </svg>
+              </div>
+              <div className="brand-text-container">
+                <h1 className="brand-title">
+                  Print<span>Sathi</span>
+                </h1>
+                <p className="brand-subtitle">Campus Smart Print</p>
+              </div>
             </div>
-            <div>
-              <h1 className="brand-title">
-                Print<span>Sathi</span>
-              </h1>
-              <p className="brand-subtitle">Campus Smart Print Queue</p>
-            </div>
+          </Link>
+
+          {/* Status Badge in Header Row on Mobile */}
+          <div className="navbar-status-mobile">
+            {statusBadge}
           </div>
-        </Link>
+        </div>
 
-        {/* Navigation links & status */}
-        <div className="navbar-stats">
-          {/* Status Indicator */}
-          {isFirebaseConfigured ? (
-            <div 
-              className="campus-pill" 
-              style={{ background: '#ecfdf5', color: '#047857', borderColor: '#a7f3d0' }}
-              title="Connected to Firebase Cloud Firestore"
+        {/* Desktop Controls (Status + Nav) / Mobile Row 2 (Full-width Nav Tabs) */}
+        <div className="navbar-controls">
+          <div className="navbar-status-desktop">
+            {statusBadge}
+          </div>
+
+          <nav className="navbar-nav-group" aria-label="Campus navigation">
+            <Link
+              to="/"
+              className={`nav-tab-btn ${isActive('/') ? 'active' : ''}`}
             >
-              <span className="status-dot"></span>
-              <span>🔥 Firebase Active</span>
-            </div>
-          ) : (
-            <div 
-              className="campus-pill" 
-              style={{ background: '#f8fafc', color: '#64748b', borderColor: '#e2e8f0' }}
-              title="Running in local simulation mode"
+              Counters
+            </Link>
+
+            <Link
+              to="/orders"
+              className={`nav-tab-btn ${isActive('/orders') ? 'active' : ''}`}
             >
-              <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#94a3b8', display: 'inline-block' }}></span>
-              <span>Demo Mode</span>
-            </div>
-          )}
-
-          {/* Nav Links */}
-          <Link
-            to="/"
-            style={{
-              textDecoration: 'none',
-              padding: '0.45rem 0.75rem',
-              fontSize: '0.82rem',
-              fontWeight: '600',
-              borderRadius: '6px',
-              background: isActive('/') ? '#334155' : 'transparent',
-              color: isActive('/') ? '#38bdf8' : '#cbd5e1'
-            }}
-          >
-            Counters
-          </Link>
-
-          <Link
-            to="/orders"
-            style={{
-              textDecoration: 'none',
-              padding: '0.45rem 0.75rem',
-              fontSize: '0.82rem',
-              fontWeight: '600',
-              borderRadius: '6px',
-              background: isActive('/orders') ? '#334155' : 'transparent',
-              color: isActive('/orders') ? '#38bdf8' : '#cbd5e1'
-            }}
-          >
-            📋 Orders {ordersCount > 0 && `(${ordersCount})`}
-          </Link>
+              📋 Orders {ordersCount > 0 && <span className="nav-orders-count">({ordersCount})</span>}
+            </Link>
+          </nav>
         </div>
       </div>
     </header>

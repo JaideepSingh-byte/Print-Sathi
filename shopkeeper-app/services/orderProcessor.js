@@ -30,6 +30,12 @@ class OrderProcessor {
     this.isProcessing = false;
     this.activeJob = null;
     this.recentHistory = [];
+    this.currentQueuePayload = {
+      pending: [],
+      completed: [],
+      all: [],
+      targetShopId: this.targetShopId,
+    };
     this.listeners = {
       log: [],
       queueChange: [],
@@ -102,26 +108,83 @@ class OrderProcessor {
 
   setTargetShopId(shopId) {
     this.targetShopId = shopId || 'ALL';
+    if (this.currentQueuePayload) {
+      this.currentQueuePayload.targetShopId = this.targetShopId;
+    }
     this.log('info', `Target counter changed to: "${this.targetShopId}".`);
     this.notifyStatus();
   }
 
+  getQueuePayload() {
+    return (
+      this.currentQueuePayload || {
+        pending: [],
+        completed: [],
+        all: [],
+        targetShopId: this.targetShopId,
+      }
+    );
+  }
+
   async handleIncomingQueue(queue, allDocs = []) {
+    // Strict counter segregation: only process & show orders for this counter
+    const matchesTargetShop = (d) => firebaseService.matchesShopId(d?.shopId, this.targetShopId);
+    const shopDocs = allDocs.filter(matchesTargetShop);
+
+    // Pending orders include active queue states: QUEUED, PENDING, PRINTING, PRINT_SUBMITTED, NEEDS_VERIFICATION
+    const pendingStatuses = ['QUEUED', 'PENDING', 'PRINTING', 'PRINT_SUBMITTED', 'NEEDS_VERIFICATION'];
+    const pending = shopDocs.filter((d) => {
+      const s = (d.status || '').toUpperCase();
+      const ps = (d.printStatus || '').toUpperCase();
+      return pendingStatuses.includes(s) || pendingStatuses.includes(ps);
+    });
+
+    // FIFO sort pending jobs by creation timestamp
+    pending.sort((a, b) => {
+      const timeA = typeof a.createdAt === 'number' ? a.createdAt : new Date(a.createdAt || 0).getTime();
+      const timeB = typeof b.createdAt === 'number' ? b.createdAt : new Date(b.createdAt || 0).getTime();
+      return (timeA || 0) - (timeB || 0);
+    });
+
+    // Completed orders include COMPLETED and PRINTED states
+    const completedStatuses = ['COMPLETED', 'PRINTED'];
+    const completed = shopDocs.filter((d) => {
+      const s = (d.status || '').toUpperCase();
+      const ps = (d.printStatus || '').toUpperCase();
+      return completedStatuses.includes(s) || completedStatuses.includes(ps);
+    });
+
+    // Sort completed jobs LIFO (most recently completed or created first)
+    completed.sort((a, b) => {
+      const timeA = typeof a.printCompletedAt === 'number' ? a.printCompletedAt : (typeof a.createdAt === 'number' ? a.createdAt : 0);
+      const timeB = typeof b.printCompletedAt === 'number' ? b.printCompletedAt : (typeof b.createdAt === 'number' ? b.createdAt : 0);
+      return (timeB || 0) - (timeA || 0);
+    });
+
     const payload = {
-      pending: queue,
-      all: allDocs,
-      completed: allDocs.filter((d) => d.status === 'COMPLETED' || d.status === 'PRINTED'),
+      pending,
+      completed,
+      all: shopDocs,
+      targetShopId: this.targetShopId,
     };
+    this.currentQueuePayload = payload;
     this.listeners.queueChange.forEach((cb) => cb(payload));
 
     if (this.isProcessing || this.isPaused || !this.autoPrint) {
       return;
     }
 
-    if (queue.length === 0) return;
+    // Auto-print candidates: queued and paid jobs waiting to be spooled
+    const eligibleJobs = queue.filter((j) => {
+      const s = (j.status || '').toUpperCase();
+      const ps = (j.printStatus || '').toUpperCase();
+      return (s === 'QUEUED' || s === 'PENDING' || ps === 'QUEUED') && s !== 'PRINTING' && s !== 'COMPLETED';
+    });
+
+    if (eligibleJobs.length === 0) return;
 
     // Pick next FIFO job
-    const nextJob = queue[0];
+    const nextJob = eligibleJobs[0];
     await this.processJob(nextJob);
   }
 
@@ -226,47 +289,147 @@ class OrderProcessor {
     const safeName = (fileName || 'document.pdf').replace(/[^a-zA-Z0-9._-]/g, '_');
     const localPath = path.join(this.spoolDir, `${orderId}_${safeName}`);
 
-    // If file is already a valid local path
-    if (fileUrl && fs.existsSync(fileUrl)) {
+    if (!fileUrl) {
+      throw new Error(`FILE_NOT_SPECIFIED: Order #${orderId} document "${fileName}" has no download URL or file data.`);
+    }
+
+    // 1. Direct Base64 Data URI (synced via Firestore document payload)
+    if (fileUrl.startsWith('data:')) {
+      try {
+        const commaIndex = fileUrl.indexOf(',');
+        if (commaIndex === -1) {
+          throw new Error('Malformed data URI (missing comma separator).');
+        }
+        const base64Data = fileUrl.slice(commaIndex + 1);
+        const buffer = Buffer.from(base64Data, 'base64');
+        if (buffer.length === 0) {
+          throw new Error('Base64 payload is 0 bytes.');
+        }
+        fs.writeFileSync(localPath, buffer);
+        this.validateDocumentAndSpecs(localPath, { copies: 1 });
+        this.log('info', `✅ Successfully extracted Base64 PDF (${buffer.length} bytes) for "${fileName}".`);
+        return localPath;
+      } catch (err) {
+        throw new Error(`BASE64_DECODE_FAILED: Could not decode document "${fileName}": ${err.message}`);
+      }
+    }
+
+    // 2. Direct local file path
+    if (fs.existsSync(fileUrl)) {
       fs.copyFileSync(fileUrl, localPath);
+      this.validateDocumentAndSpecs(localPath, { copies: 1 });
       return localPath;
     }
 
-    // If HTTP / HTTPS download URL
-    if (fileUrl && fileUrl.startsWith('http')) {
-      return new Promise((resolve, reject) => {
-        const client = fileUrl.startsWith('https') ? https : http;
-        const fileStream = fs.createWriteStream(localPath);
+    // 3. Browser-local Blob URL (Strictly Rejected - Inaccessible to Desktop Station)
+    if (fileUrl.startsWith('blob:')) {
+      throw new Error(
+        `BLOB_URL_INACCESSIBLE: Order #${orderId} document "${fileName}" points to a browser-local blob URL (${fileUrl.slice(0, 45)}...). ` +
+        `This file was never uploaded to accessible cloud storage and cannot be downloaded by this desktop station. ` +
+        `Ensure Cloud Storage is provisioned or file is under 750KB for direct sync.`
+      );
+    }
 
-        const req = client.get(fileUrl, (response) => {
-          if (response.statusCode >= 400) {
-            return reject(new Error(`Server returned HTTP ${response.statusCode}`));
-          }
-          response.pipe(fileStream);
-          fileStream.on('finish', () => {
-            fileStream.close(() => resolve(localPath));
+    // 4. Remote HTTP / HTTPS URL (e.g. Firebase Cloud Storage download URL)
+    if (fileUrl.startsWith('http://') || fileUrl.startsWith('https://')) {
+      return await this.downloadRemoteFileWithRedirects(fileUrl, localPath);
+    }
+
+    throw new Error(`UNSUPPORTED_PROTOCOL: File URL protocol is not supported: "${fileUrl.slice(0, 30)}..."`);
+  }
+
+  /**
+   * Downloads remote HTTP/HTTPS PDF stream, following 3xx redirects and validating %PDF-
+   */
+  downloadRemoteFileWithRedirects(fileUrl, localPath, redirectCount = 0) {
+    if (redirectCount > 5) {
+      return Promise.reject(new Error('Too many HTTP redirects (exceeded 5).'));
+    }
+
+    return new Promise((resolve, reject) => {
+      const isHttps = fileUrl.startsWith('https://');
+      const client = isHttps ? https : http;
+      let parsedUrl;
+      try {
+        parsedUrl = new URL(fileUrl);
+      } catch (err) {
+        return reject(new Error(`Malformed download URL: ${err.message}`));
+      }
+
+      const options = {
+        hostname: parsedUrl.hostname,
+        port: parsedUrl.port || (isHttps ? 443 : 80),
+        path: parsedUrl.pathname + parsedUrl.search,
+        method: 'GET',
+        headers: {
+          'User-Agent': 'PrintSathi-DesktopClient/1.0',
+          'Accept': 'application/pdf, application/octet-stream, */*',
+        },
+      };
+
+      const req = client.request(options, (response) => {
+        // Handle HTTP 3xx Redirects (301, 302, 303, 307, 308)
+        if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+          const redirectUrl = new URL(response.headers.location, fileUrl).href;
+          response.resume(); // Drain and discard redirect body
+          return resolve(this.downloadRemoteFileWithRedirects(redirectUrl, localPath, redirectCount + 1));
+        }
+
+        // Verify HTTP 200 Success
+        if (response.statusCode !== 200) {
+          let errBody = '';
+          response.on('data', (c) => (errBody += c));
+          response.on('end', () => {
+            reject(
+              new Error(`Server returned HTTP ${response.statusCode} (${response.statusMessage || 'Download error'}): ${errBody.slice(0, 150)}`)
+            );
+          });
+          return;
+        }
+
+        // Verify Content-Type if present (reject HTML/JSON error responses)
+        const contentType = (response.headers['content-type'] || '').toLowerCase();
+        if (contentType.includes('text/html') || contentType.includes('application/json')) {
+          let errBody = '';
+          response.on('data', (c) => (errBody += c));
+          response.on('end', () => {
+            reject(new Error(`Server returned non-PDF content type "${contentType}": ${errBody.slice(0, 150)}`));
+          });
+          return;
+        }
+
+        const fileStream = fs.createWriteStream(localPath);
+        response.pipe(fileStream);
+
+        fileStream.on('finish', () => {
+          fileStream.close(() => {
+            try {
+              this.validateDocumentAndSpecs(localPath, { copies: 1 });
+              resolve(localPath);
+            } catch (valErr) {
+              try { fs.unlinkSync(localPath); } catch (_) {}
+              reject(valErr);
+            }
           });
         });
 
-        req.on('error', (err) => {
-          fs.unlink(localPath, () => {});
+        fileStream.on('error', (err) => {
+          try { fs.unlinkSync(localPath); } catch (_) {}
           reject(err);
         });
-
-        req.setTimeout(12000, () => {
-          req.destroy(new Error('Download timed out after 12s'));
-        });
       });
-    }
 
-    // Fallback sample file if local blob
-    const sampleFallback = path.resolve(__dirname, '../../sample_documents/Sample_Lecture_Notes_5_Pages.pdf');
-    if (fs.existsSync(sampleFallback)) {
-      fs.copyFileSync(sampleFallback, localPath);
-      return localPath;
-    }
+      req.on('error', (err) => {
+        try { fs.unlinkSync(localPath); } catch (_) {}
+        reject(err);
+      });
 
-    throw new Error('Valid PDF download link or file reference was not found.');
+      req.setTimeout(30000, () => {
+        req.destroy(new Error('PDF download timed out after 30 seconds.'));
+      });
+
+      req.end();
+    });
   }
 
   /**

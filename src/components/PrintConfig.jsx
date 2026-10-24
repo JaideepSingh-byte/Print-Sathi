@@ -11,6 +11,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { parsePageRange } from '../utils/pdfHelper';
+import { calculateFilePrice } from '../utils/pricingEngine';
 
 export default function PrintConfig({
   filesList = [],
@@ -30,6 +31,7 @@ export default function PrintConfig({
   setCalculatedPages,
   isFileActive = true,
   supportedServices = null,
+  shopPricing = null,
 }) {
   const [selectedTarget, setSelectedTarget] = useState('all'); // 'all' or file.id
   const [rangeValidation, setRangeValidation] = useState({
@@ -79,6 +81,34 @@ export default function PrintConfig({
     }
   }, [pageRangeMode, customRangeString, currentTotalPages, setCalculatedPages]);
 
+  // Whenever shopPricing updates asynchronously, keep all file pricing in sync
+  useEffect(() => {
+    if (!setFilesList || !filesList.length) return;
+    let changed = false;
+    const updated = filesList.map((item) => {
+      const pricing = calculateFilePrice({
+        calculatedPages: item.calculatedPages || item.totalPages || 1,
+        copies: item.copies || 1,
+        colorMode: item.colorMode || 'bw',
+        sides: item.sides || 'single',
+      }, shopPricing);
+
+      if (item.ratePerPage !== pricing.ratePerPage || item.itemTotal !== pricing.itemTotal) {
+        changed = true;
+        return {
+          ...item,
+          ratePerPage: pricing.ratePerPage,
+          itemTotal: pricing.itemTotal,
+        };
+      }
+      return item;
+    });
+
+    if (changed) {
+      setFilesList(updated);
+    }
+  }, [shopPricing]);
+
   // Synchronize changes to filesList
   const syncToFiles = (updates) => {
     if (!setFilesList || filesList.length === 0) return;
@@ -97,6 +127,13 @@ export default function PrintConfig({
           calcPages = parsed.isValid ? parsed.count : 0;
         }
 
+        const pricing = calculateFilePrice({
+          calculatedPages: calcPages,
+          copies: newCopies,
+          colorMode: newColor,
+          sides: newSides,
+        }, shopPricing);
+
         return {
           ...item,
           copies: newCopies,
@@ -105,6 +142,8 @@ export default function PrintConfig({
           pageRangeMode: newRangeMode,
           pageRangeString: newRangeMode === 'all' ? `All (${item.totalPages} pgs)` : newRangeStr,
           calculatedPages: calcPages,
+          ratePerPage: pricing.ratePerPage,
+          itemTotal: pricing.itemTotal,
         };
       }
       return item;

@@ -17,6 +17,7 @@ import { calculateOrderPricing, formatCurrency } from '../utils/pricingEngine';
 export default function PriceBreakdown({
   filesList = [],
   shop = null,
+  pricingSnapshot: externalPricingSnapshot = null,
   // Backwards compatibility props:
   isFileActive,
   calculatedPages = 1,
@@ -44,7 +45,7 @@ export default function PriceBreakdown({
       ]
     : [];
 
-  const pricingSnapshot = calculateOrderPricing(
+  const pricingSnapshot = externalPricingSnapshot || calculateOrderPricing(
     effectiveFilesList,
     shop?.pricingTiers || null
   );
@@ -121,10 +122,10 @@ export default function PriceBreakdown({
                     color: '#cbd5e1'
                   }}
                 >
-                  <span style={{ maxWidth: '170px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={item.fileName}>
+                  <span style={{ flex: '1 1 auto', minWidth: 0, marginRight: '0.5rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={item.fileName}>
                     {idx + 1}. {item.fileName} ({item.copies}x, {item.colorMode.toUpperCase()})
                   </span>
-                  <span style={{ fontWeight: '600', color: '#38bdf8' }}>
+                  <span style={{ fontWeight: '600', color: '#38bdf8', flexShrink: 0 }}>
                     {formatCurrency(item.itemTotal)}
                   </span>
                 </div>

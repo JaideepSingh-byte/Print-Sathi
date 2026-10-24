@@ -20,12 +20,12 @@ export default function RecentOrders({ orders, onSelectOrder, onBackToForm, onRe
 
   return (
     <div className="panel-card" style={{ maxWidth: '900px', margin: '0 auto' }}>
-      <div className="panel-header">
+      <div className="panel-header recent-orders-header">
         <h2 className="panel-title">
           <span className="panel-title-icon">📋</span>
           My Campus Print Queue
         </h2>
-        <div style={{ display: 'flex', gap: '0.5rem' }}>
+        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
           {orders.length > 0 && (
             <button
               type="button"

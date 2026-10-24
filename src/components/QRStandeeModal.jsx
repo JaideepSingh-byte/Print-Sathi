@@ -78,7 +78,8 @@ export default function QRStandeeModal({ shop, isOpen, onClose }) {
           {/* QR Code Container */}
           <div style={{
             display: 'inline-block',
-            padding: '1.25rem',
+            padding: '1rem',
+            maxWidth: '100%',
             background: '#ffffff',
             borderRadius: '16px',
             border: '2px solid #e2e8f0',
@@ -86,9 +87,10 @@ export default function QRStandeeModal({ shop, isOpen, onClose }) {
           }}>
             <QRCodeSVG
               value={shopUrl}
-              size={210}
+              size={180}
               level="H"
               includeMargin={true}
+              style={{ maxWidth: '100%', height: 'auto' }}
             />
           </div>
 

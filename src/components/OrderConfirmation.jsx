@@ -32,6 +32,28 @@ export default function OrderConfirmation({ order, onReset }) {
 
   const pickupLocation = order.pickupCounter || 'Counter 1 (Main Xerox Center, Student Plaza)';
 
+  const handleViewPdf = (e, fileUrl) => {
+    if (!fileUrl) return;
+    if (fileUrl.startsWith('data:')) {
+      e.preventDefault();
+      try {
+        const parts = fileUrl.split(',');
+        const mime = parts[0].match(/:(.*?);/)?.[1] || 'application/pdf';
+        const binary = atob(parts[1]);
+        const array = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+          array[i] = binary.charCodeAt(i);
+        }
+        const blob = new Blob([array], { type: mime });
+        const blobUrl = URL.createObjectURL(blob);
+        window.open(blobUrl, '_blank');
+      } catch (err) {
+        console.warn('Error opening Base64 preview:', err);
+        window.open(fileUrl, '_blank');
+      }
+    }
+  };
+
   return (
     <div className="confirmation-container">
       <div className="token-pass-card">
@@ -64,7 +86,7 @@ export default function OrderConfirmation({ order, onReset }) {
         </div>
 
         {/* Multi-Document Itemized Slip List */}
-        <div style={{ margin: '1.25rem 2rem 0', textAlign: 'left' }}>
+        <div className="token-slip-docs-section" style={{ textAlign: 'left' }}>
           <h4 style={{ fontSize: '0.85rem', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>
             Documents in this Order ({files.length}):
           </h4>
@@ -80,11 +102,12 @@ export default function OrderConfirmation({ order, onReset }) {
                   background: 'rgba(30, 41, 59, 0.4)',
                   borderRadius: '8px',
                   border: '1px solid rgba(255, 255, 255, 0.06)',
-                  fontSize: '0.82rem'
+                  fontSize: '0.82rem',
+                  gap: '0.5rem'
                 }}
               >
-                <div>
-                  <div style={{ fontWeight: '600', color: '#f8fafc' }}>
+                <div style={{ minWidth: 0, flex: '1 1 auto' }}>
+                  <div style={{ fontWeight: '600', color: '#f8fafc', wordBreak: 'break-word' }}>
                     📄 {idx + 1}. {file.fileName}
                   </div>
                   <div style={{ fontSize: '0.74rem', color: '#94a3b8', marginTop: '0.15rem' }}>
@@ -93,7 +116,7 @@ export default function OrderConfirmation({ order, onReset }) {
                     {file.sides === 'double' ? 'Duplex' : 'Single'}
                   </div>
                 </div>
-                <div style={{ textAlign: 'right' }}>
+                <div style={{ textAlign: 'right', flexShrink: 0 }}>
                   <span style={{ fontWeight: '600', color: '#38bdf8' }}>
                     {formatCurrency(file.itemTotal || 0)}
                   </span>
@@ -103,7 +126,8 @@ export default function OrderConfirmation({ order, onReset }) {
                         href={file.fileUrl}
                         target="_blank"
                         rel="noreferrer"
-                        style={{ fontSize: '0.7rem', color: '#60a5fa', textDecoration: 'none' }}
+                        onClick={(e) => handleViewPdf(e, file.fileUrl)}
+                        style={{ fontSize: '0.7rem', color: '#60a5fa', textDecoration: 'none', cursor: 'pointer' }}
                       >
                         ↗ View PDF
                       </a>

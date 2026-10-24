@@ -22,6 +22,7 @@ import {
   MAX_FILES_COUNT,
   MAX_TOTAL_SIZE_BYTES
 } from '../utils/pdfHelper';
+import { calculateFilePrice } from '../utils/pricingEngine';
 
 export default function UploadZone({ 
   filesList = [], 
@@ -29,7 +30,8 @@ export default function UploadZone({
   activeFile, 
   setActiveFile, 
   totalPages, 
-  setTotalPages 
+  setTotalPages,
+  shopPricing = null,
 }) {
   const [isDragActive, setIsDragActive] = useState(false);
   const [errorMessage, setErrorMessage] = useState(null);
@@ -68,6 +70,13 @@ export default function UploadZone({
         detectedPages = 1;
       }
 
+      const initialPrice = calculateFilePrice({
+        calculatedPages: detectedPages,
+        copies: 1,
+        colorMode: 'bw',
+        sides: 'single',
+      }, shopPricing);
+
       const fileItem = {
         id: `file_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
         rawFile: file,
@@ -80,8 +89,8 @@ export default function UploadZone({
         copies: 1,
         colorMode: 'bw',
         sides: 'single',
-        ratePerPage: 2,
-        itemTotal: detectedPages * 2,
+        ratePerPage: initialPrice.ratePerPage,
+        itemTotal: initialPrice.itemTotal,
       };
 
       newlyAdded.push(fileItem);
@@ -184,6 +193,7 @@ export default function UploadZone({
       {filesList.length > 0 && (
         <div style={{
           display: 'flex',
+          flexWrap: 'wrap',
           justifyContent: 'space-between',
           alignItems: 'center',
           padding: '0.6rem 0.85rem',
@@ -192,7 +202,8 @@ export default function UploadZone({
           borderRadius: '8px',
           border: '1px solid rgba(255, 255, 255, 0.08)',
           fontSize: '0.82rem',
-          color: '#94a3b8'
+          color: '#94a3b8',
+          gap: '0.4rem'
         }}>
           <div>
             <strong style={{ color: '#38bdf8' }}>{filesList.length}</strong> of {MAX_FILES_COUNT} files &bull;{' '}
@@ -286,22 +297,22 @@ export default function UploadZone({
               className="active-file-card"
               style={{ padding: '0.8rem 1rem', margin: 0 }}
             >
-              <div className="file-header-row" style={{ alignItems: 'center' }}>
-                <div className="pdf-icon-box" style={{ width: '38px', height: '38px', fontSize: '0.75rem' }}>
+              <div className="file-header-row">
+                <div className="pdf-icon-box">
                   <span>PDF</span>
                 </div>
                 <div className="file-details">
-                  <h4 className="file-name-text" title={item.name} style={{ fontSize: '0.9rem' }}>
+                  <h4 className="file-name-text" title={item.name}>
                     {idx + 1}. {item.name}
                   </h4>
-                  <div className="file-meta-row" style={{ marginTop: '0.2rem' }}>
-                    <span className="meta-pill" style={{ fontSize: '0.74rem' }}>
+                  <div className="file-meta-row">
+                    <span className="meta-pill">
                       📊 {formatFileSize(item.size)}
                     </span>
-                    <span className="meta-pill" style={{ fontSize: '0.74rem' }}>
+                    <span className="meta-pill">
                       📄 {item.totalPages} Page{item.totalPages > 1 ? 's' : ''}
                     </span>
-                    <span className="verified-badge" style={{ fontSize: '0.72rem', padding: '0.15rem 0.5rem' }}>
+                    <span className="verified-badge">
                       ✓ Verified
                     </span>
                   </div>
@@ -311,7 +322,6 @@ export default function UploadZone({
                   className="remove-btn"
                   onClick={() => handleRemoveItem(item.id)}
                   title="Remove file"
-                  style={{ marginLeft: 'auto', padding: '0.35rem 0.65rem' }}
                 >
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                     <line x1="18" y1="6" x2="6" y2="18" />

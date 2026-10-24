@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('desktopAPI', {
   retryJob: (orderId) => ipcRenderer.invoke('retry-job', orderId),
   setTargetShop: (shopId) => ipcRenderer.invoke('set-target-shop', shopId),
   getTargetShop: () => ipcRenderer.invoke('get-target-shop'),
+  getQueue: () => ipcRenderer.invoke('get-queue'),
 
   // Real-time Event Subscriptions
   onQueueUpdate: (callback) => {
@@ -34,5 +35,24 @@ contextBridge.exposeInMainWorld('desktopAPI', {
     const handler = (_event, logItem) => callback(logItem);
     ipcRenderer.on('log-message', handler);
     return () => ipcRenderer.removeListener('log-message', handler);
+  },
+
+  // Authentication & Session IPC
+  loginShopkeeper: (email, password) => ipcRenderer.invoke('auth-login-shopkeeper', { email, password }),
+  registerShopkeeper: (data) => ipcRenderer.invoke('auth-register-shopkeeper', data),
+  checkShopStatus: (shopId) => ipcRenderer.invoke('auth-check-shop-status', shopId),
+  loginAdmin: (usernameOrEmail, password) => ipcRenderer.invoke('auth-login-admin', { usernameOrEmail, password }),
+  logout: () => ipcRenderer.invoke('auth-logout'),
+  getCurrentSession: () => ipcRenderer.invoke('auth-get-session'),
+
+  // Administrator Operations IPC
+  adminGetShops: () => ipcRenderer.invoke('admin-get-shops'),
+  adminUpdateShopStatus: (shopId, status, rejectionReason) =>
+    ipcRenderer.invoke('admin-update-shop-status', { shopId, status, rejectionReason }),
+  adminCreateShop: (shopData) => ipcRenderer.invoke('admin-create-shop', shopData),
+  onAdminShopsUpdate: (callback) => {
+    const handler = (_event, shops) => callback(shops);
+    ipcRenderer.on('admin-shops-update', handler);
+    return () => ipcRenderer.removeListener('admin-shops-update', handler);
   },
 });
