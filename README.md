@@ -1,27 +1,8 @@
-# 🖨️ Print-Sathi | Campus Smart Print Queue Service
+#  Print-Sathi | Campus Smart Print Queue Service
 
 A modern, fast, and intuitive prototype for campus print shops and students to skip the xerox line, configure print jobs, pay via UPI, and receive a 4-digit counter pickup token.
 
----
-
-## 🚀 Quick Start (Running in VS Code)
-
-To start the development server:
-
-```bash
-# 1. Open the project folder in VS Code
-cd "d:\Print Sathi"
-
-# 2. Run the application
-npm start
-```
-
-The application will immediately compile and open in your default browser at:
-👉 **`http://localhost:3000`**
-
----
-
-## 🛠️ Tech Stack & Architecture
+##  Tech Stack & Architecture
 
 - **Frontend:** React 18 (modular functional components with React Hooks `useState`, `useEffect`, `useRef`).
 - **Styling:** 100% Vanilla **CSS3 only** (organized semantic CSS, flexbox, CSS grid, CSS variables). **Zero third-party CSS or utility frameworks.**
@@ -33,7 +14,7 @@ The application will immediately compile and open in your default browser at:
 
 ---
 
-## 📋 Core Features Built
+##  Core Features Built
 
 ### 1. Document Upload Zone (Strict PDF Only)
 - **Drag & Drop** plus manual **Browse Files** button.
@@ -72,7 +53,7 @@ The application will immediately compile and open in your default browser at:
 
 ---
 
-## 📂 Project Structure
+## Project Structure
 
 ```
 d:\Print Sathi/
@@ -103,7 +84,7 @@ d:\Print Sathi/
 
 ---
 
-## 💡 How Firebase Works in Print-Sathi
+## How Firebase Works in Print-Sathi
 
 In production, two Firebase services work in tandem:
 
