@@ -3,78 +3,159 @@
  * PRINT-SATHI COMPONENT: Print Configuration Form
  * ============================================================================
  * 
- * What this component does in plain language:
- * 1. Lets students configure their print job:
- *    - Copies Stepper: Increment, decrement, or type number of copies (1-100).
- *    - Color Mode Selector: Black & White (₹1/page) or Vibrant Color (₹5/page).
- *    - Print Range: "All Pages" or "Custom Range".
- *    - Custom Range Input: Automatically parses patterns like "1-5, 8, 11-13"
- *      and calculates the exact number of pages to print.
- *    - Sides Selection: "Single-Sided" or "Double-Sided" (eco-friendly campus standard).
+ * Supports:
+ * 1. Global batch configuration applied to all uploaded files, or
+ * 2. Per-document specific overrides (Copies, Color/B&W, Single/Double, Page Range).
+ * 3. Full backwards-compatibility with legacy single-file parent state.
  */
 
 import React, { useEffect, useState } from 'react';
 import { parsePageRange } from '../utils/pdfHelper';
 
 export default function PrintConfig({
-  totalPages,
-  copies,
+  filesList = [],
+  setFilesList,
+  // Backwards compatibility props:
+  totalPages = 1,
+  copies = 1,
   setCopies,
-  colorMode,
+  colorMode = 'bw',
   setColorMode,
-  pageRangeMode,
+  pageRangeMode = 'all',
   setPageRangeMode,
-  customRangeString,
+  customRangeString = '',
   setCustomRangeString,
-  sides,
+  sides = 'single',
   setSides,
   setCalculatedPages,
-  isFileActive,
+  isFileActive = true,
+  supportedServices = null,
 }) {
+  const [selectedTarget, setSelectedTarget] = useState('all'); // 'all' or file.id
   const [rangeValidation, setRangeValidation] = useState({
     isValid: true,
     error: null,
     count: totalPages,
   });
 
+  const allowsBw = supportedServices ? supportedServices.bw !== false : true;
+  const allowsColor = supportedServices ? supportedServices.color !== false : true;
+  const allowsSingle = supportedServices ? supportedServices.single !== false : true;
+  const allowsDuplex = supportedServices ? supportedServices.duplex !== false : true;
+
+  // Auto-correct mode if counter does not support active option
+  useEffect(() => {
+    if (!allowsColor && colorMode === 'color') {
+      if (setColorMode) setColorMode('bw');
+      syncToFiles({ colorMode: 'bw' });
+    } else if (!allowsBw && colorMode === 'bw') {
+      if (setColorMode) setColorMode('color');
+      syncToFiles({ colorMode: 'color' });
+    }
+
+    if (!allowsDuplex && sides === 'double') {
+      if (setSides) setSides('single');
+      syncToFiles({ sides: 'single' });
+    } else if (!allowsSingle && sides === 'single') {
+      if (setSides) setSides('double');
+      syncToFiles({ sides: 'double' });
+    }
+  }, [supportedServices, colorMode, sides, allowsBw, allowsColor, allowsSingle, allowsDuplex]);
+
+  const activeDoc = filesList.find((f) => f.id === selectedTarget) || filesList[0] || null;
+  const currentTotalPages = activeDoc ? activeDoc.totalPages : totalPages;
+
   // Whenever range mode, custom range text, or total pages change, re-evaluate:
   useEffect(() => {
     if (pageRangeMode === 'all') {
-      setCalculatedPages(totalPages);
-      setRangeValidation({ isValid: true, error: null, count: totalPages });
+      if (setCalculatedPages) setCalculatedPages(currentTotalPages);
+      setRangeValidation({ isValid: true, error: null, count: currentTotalPages });
     } else {
-      const result = parsePageRange(customRangeString, totalPages);
+      const result = parsePageRange(customRangeString, currentTotalPages);
       setRangeValidation(result);
-      if (result.isValid) {
-        setCalculatedPages(result.count);
-      } else {
-        setCalculatedPages(0);
+      if (setCalculatedPages) {
+        setCalculatedPages(result.isValid ? result.count : 0);
       }
     }
-  }, [pageRangeMode, customRangeString, totalPages, setCalculatedPages]);
+  }, [pageRangeMode, customRangeString, currentTotalPages, setCalculatedPages]);
+
+  // Synchronize changes to filesList
+  const syncToFiles = (updates) => {
+    if (!setFilesList || filesList.length === 0) return;
+
+    const updated = filesList.map((item) => {
+      if (selectedTarget === 'all' || item.id === selectedTarget) {
+        const newCopies = updates.copies !== undefined ? updates.copies : item.copies;
+        const newColor = updates.colorMode !== undefined ? updates.colorMode : item.colorMode;
+        const newSides = updates.sides !== undefined ? updates.sides : item.sides;
+        const newRangeMode = updates.pageRangeMode !== undefined ? updates.pageRangeMode : item.pageRangeMode;
+        const newRangeStr = updates.customRangeString !== undefined ? updates.customRangeString : item.pageRangeString;
+
+        let calcPages = item.totalPages;
+        if (newRangeMode === 'custom') {
+          const parsed = parsePageRange(newRangeStr, item.totalPages);
+          calcPages = parsed.isValid ? parsed.count : 0;
+        }
+
+        return {
+          ...item,
+          copies: newCopies,
+          colorMode: newColor,
+          sides: newSides,
+          pageRangeMode: newRangeMode,
+          pageRangeString: newRangeMode === 'all' ? `All (${item.totalPages} pgs)` : newRangeStr,
+          calculatedPages: calcPages,
+        };
+      }
+      return item;
+    });
+
+    setFilesList(updated);
+  };
 
   // Stepper handlers for copies
   const handleDecrementCopies = () => {
     if (copies > 1) {
-      setCopies(copies - 1);
+      const next = copies - 1;
+      if (setCopies) setCopies(next);
+      syncToFiles({ copies: next });
     }
   };
 
   const handleIncrementCopies = () => {
     if (copies < 100) {
-      setCopies(copies + 1);
+      const next = copies + 1;
+      if (setCopies) setCopies(next);
+      syncToFiles({ copies: next });
     }
   };
 
   const handleCopiesInputChange = (e) => {
     const val = parseInt(e.target.value, 10);
-    if (isNaN(val)) {
-      setCopies(1);
-    } else {
-      // Clamp between 1 and 100
-      const clamped = Math.max(1, Math.min(100, val));
-      setCopies(clamped);
-    }
+    const next = isNaN(val) ? 1 : Math.max(1, Math.min(100, val));
+    if (setCopies) setCopies(next);
+    syncToFiles({ copies: next });
+  };
+
+  const handleColorModeChange = (mode) => {
+    if (setColorMode) setColorMode(mode);
+    syncToFiles({ colorMode: mode });
+  };
+
+  const handleSidesChange = (newSides) => {
+    if (setSides) setSides(newSides);
+    syncToFiles({ sides: newSides });
+  };
+
+  const handleRangeModeChange = (mode) => {
+    if (setPageRangeMode) setPageRangeMode(mode);
+    syncToFiles({ pageRangeMode: mode });
+  };
+
+  const handleCustomRangeTextChange = (e) => {
+    const text = e.target.value;
+    if (setCustomRangeString) setCustomRangeString(text);
+    syncToFiles({ customRangeString: text });
   };
 
   return (
@@ -91,6 +172,35 @@ export default function PrintConfig({
         </h2>
         <span className="step-tag">Step 2 of 3</span>
       </div>
+
+      {/* Target File Selector if more than 1 file is uploaded */}
+      {filesList.length > 1 && (
+        <div style={{ marginBottom: '1rem', paddingBottom: '0.8rem', borderBottom: '1px solid rgba(255, 255, 255, 0.08)' }}>
+          <label style={{ fontSize: '0.8rem', fontWeight: '600', color: '#94a3b8', display: 'block', marginBottom: '0.35rem' }}>
+            Applying Configuration To:
+          </label>
+          <select
+            value={selectedTarget}
+            onChange={(e) => setSelectedTarget(e.target.value)}
+            style={{
+              width: '100%',
+              padding: '0.5rem 0.75rem',
+              borderRadius: '6px',
+              background: '#1e293b',
+              border: '1px solid #334155',
+              color: '#f8fafc',
+              fontSize: '0.85rem'
+            }}
+          >
+            <option value="all">⚡ All Documents ({filesList.length} files simultaneously)</option>
+            {filesList.map((f, i) => (
+              <option key={f.id} value={f.id}>
+                📄 File {i + 1}: {f.name} ({f.totalPages} pgs)
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
 
       {/* 1. NUMBER OF COPIES */}
       <div className="config-group">
@@ -131,112 +241,78 @@ export default function PrintConfig({
         </div>
       </div>
 
-      {/* 2. COLOR MODE SELECTOR */}
+      {/* 2. COLOR MODE */}
       <div className="config-group">
-        <div className="config-label-row">
-          <span className="config-label">Color Mode</span>
-          <span className="config-hint">Campus subsidized rates</span>
-        </div>
-        <div className="options-grid">
-          {/* Black & White Card */}
-          <div
-            className={`option-card ${colorMode === 'bw' ? 'active' : ''}`}
-            onClick={() => setColorMode('bw')}
-            role="radio"
-            aria-checked={colorMode === 'bw'}
-            tabIndex={0}
+        <label className="config-label">Color Mode</label>
+        <div className="segmented-control">
+          <button
+            type="button"
+            className={`segmented-btn ${colorMode === 'bw' ? 'active' : ''}`}
+            onClick={() => allowsBw && handleColorModeChange('bw')}
+            disabled={!allowsBw}
+            style={{ opacity: allowsBw ? 1 : 0.45, cursor: allowsBw ? 'pointer' : 'not-allowed' }}
           >
-            <div className="option-top">
-              <span className="option-title">⬛ Black & White</span>
-              <span className="price-tag-badge">₹1 / page</span>
-            </div>
-            <p className="option-desc">Ideal for study notes, syllabi & assignments</p>
-          </div>
-
-          {/* Color Card */}
-          <div
-            className={`option-card ${colorMode === 'color' ? 'active' : ''}`}
-            onClick={() => setColorMode('color')}
-            role="radio"
-            aria-checked={colorMode === 'color'}
-            tabIndex={0}
+            <span className="option-title">Black & White</span>
+            <span className="option-subtitle">
+              {allowsBw ? 'Campus Saver (~₹1-2/pg)' : '(Not offered at counter)'}
+            </span>
+          </button>
+          <button
+            type="button"
+            className={`segmented-btn ${colorMode === 'color' ? 'active' : ''}`}
+            onClick={() => allowsColor && handleColorModeChange('color')}
+            disabled={!allowsColor}
+            style={{ opacity: allowsColor ? 1 : 0.45, cursor: allowsColor ? 'pointer' : 'not-allowed' }}
           >
-            <div className="option-top">
-              <span className="option-title">🎨 Color Print</span>
-              <span className="price-tag-badge">₹5 / page</span>
-            </div>
-            <p className="option-desc">Perfect for diagrams, charts & presentations</p>
-          </div>
+            <span className="option-title">Full Color</span>
+            <span className="option-subtitle">
+              {allowsColor ? 'High Quality Presentation' : '(Not offered at counter)'}
+            </span>
+          </button>
         </div>
       </div>
 
-      {/* 3. PRINT RANGE (ALL VS CUSTOM) */}
+      {/* 3. PRINT RANGE */}
       <div className="config-group">
-        <div className="config-label-row">
-          <span className="config-label">Page Selection</span>
-          <span className="config-hint">
-            {isFileActive ? `Document has ${totalPages} pages` : 'Upload PDF first'}
-          </span>
-        </div>
-        <div className="options-grid">
-          {/* All Pages */}
-          <div
-            className={`option-card ${pageRangeMode === 'all' ? 'active' : ''}`}
-            onClick={() => setPageRangeMode('all')}
-            role="radio"
-            aria-checked={pageRangeMode === 'all'}
-            tabIndex={0}
+        <label className="config-label">Page Selection</label>
+        <div className="segmented-control">
+          <button
+            type="button"
+            className={`segmented-btn ${pageRangeMode === 'all' ? 'active' : ''}`}
+            onClick={() => handleRangeModeChange('all')}
           >
-            <div className="option-top">
-              <span className="option-title">📑 All Pages</span>
-              <span className="price-tag-badge">{totalPages} pgs</span>
-            </div>
-            <p className="option-desc">Print entire document from page 1 to {totalPages}</p>
-          </div>
-
-          {/* Custom Range */}
-          <div
-            className={`option-card ${pageRangeMode === 'custom' ? 'active' : ''}`}
-            onClick={() => setPageRangeMode('custom')}
-            role="radio"
-            aria-checked={pageRangeMode === 'custom'}
-            tabIndex={0}
+            <span className="option-title">All Pages</span>
+            <span className="option-subtitle">Full Document</span>
+          </button>
+          <button
+            type="button"
+            className={`segmented-btn ${pageRangeMode === 'custom' ? 'active' : ''}`}
+            onClick={() => handleRangeModeChange('custom')}
           >
-            <div className="option-top">
-              <span className="option-title">🎯 Custom Range</span>
-              <span className="price-tag-badge">Specific</span>
-            </div>
-            <p className="option-desc">Choose specific page numbers or spans</p>
-          </div>
+            <span className="option-title">Custom Range</span>
+            <span className="option-subtitle">e.g. 1-5, 8, 12</span>
+          </button>
         </div>
 
-        {/* Custom Range Input Box (Revealed when "Custom Range" is chosen) */}
         {pageRangeMode === 'custom' && (
-          <div className="range-input-wrapper">
+          <div style={{ marginTop: '0.65rem' }}>
             <input
               type="text"
-              className="range-text-input"
-              placeholder="e.g., 1-5, 8, 11-13"
+              placeholder="e.g. 1-3, 5, 7-9"
               value={customRangeString}
-              onChange={(e) => setCustomRangeString(e.target.value)}
+              onChange={handleCustomRangeTextChange}
+              style={{
+                width: '100%',
+                padding: '0.55rem 0.75rem',
+                borderRadius: '6px',
+                background: '#0f172a',
+                border: rangeValidation.isValid ? '1px solid #334155' : '1px solid #ef4444',
+                color: '#f8fafc',
+                fontSize: '0.85rem'
+              }}
             />
-            {/* Live feedback on parsed custom pages */}
-            {rangeValidation.isValid ? (
-              <span className="range-feedback valid">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                  <polyline points="20 6 9 17 4 12" />
-                </svg>
-                {rangeValidation.count} unique page{rangeValidation.count === 1 ? '' : 's'} selected: [
-                {rangeValidation.pages ? rangeValidation.pages.slice(0, 10).join(', ') : ''}
-                {rangeValidation.pages && rangeValidation.pages.length > 10 ? '...' : ''}]
-              </span>
-            ) : (
-              <span className="range-feedback invalid">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                  <circle cx="12" cy="12" r="10" />
-                  <line x1="12" y1="8" x2="12" y2="12" />
-                  <line x1="12" y1="16" x2="12.01" y2="16" />
-                </svg>
+            {rangeValidation.error && (
+              <span style={{ fontSize: '0.75rem', color: '#ef4444', marginTop: '0.25rem', display: 'block' }}>
                 {rangeValidation.error}
               </span>
             )}
@@ -244,43 +320,34 @@ export default function PrintConfig({
         )}
       </div>
 
-      {/* 4. SIDES (SINGLE VS DOUBLE SIDED) */}
+      {/* 4. SIDES (DUPLEX) */}
       <div className="config-group">
-        <div className="config-label-row">
-          <span className="config-label">Print Sides</span>
-          <span className="config-hint">Paper layout</span>
-        </div>
-        <div className="options-grid">
-          {/* Single-Sided */}
-          <div
-            className={`option-card ${sides === 'single' ? 'active' : ''}`}
-            onClick={() => setSides('single')}
-            role="radio"
-            aria-checked={sides === 'single'}
-            tabIndex={0}
+        <label className="config-label">Paper Layout</label>
+        <div className="segmented-control">
+          <button
+            type="button"
+            className={`segmented-btn ${sides === 'single' ? 'active' : ''}`}
+            onClick={() => allowsSingle && handleSidesChange('single')}
+            disabled={!allowsSingle}
+            style={{ opacity: allowsSingle ? 1 : 0.45, cursor: allowsSingle ? 'pointer' : 'not-allowed' }}
           >
-            <div className="option-top">
-              <span className="option-title">📄 Single-Sided</span>
-            </div>
-            <p className="option-desc">One side printed per sheet of paper</p>
-          </div>
-
-          {/* Double-Sided */}
-          <div
-            className={`option-card ${sides === 'double' ? 'active' : ''}`}
-            onClick={() => setSides('double')}
-            role="radio"
-            aria-checked={sides === 'double'}
-            tabIndex={0}
+            <span className="option-title">Single-Sided</span>
+            <span className="option-subtitle">
+              {allowsSingle ? 'One side per sheet' : '(Not offered at counter)'}
+            </span>
+          </button>
+          <button
+            type="button"
+            className={`segmented-btn ${sides === 'double' ? 'active' : ''}`}
+            onClick={() => allowsDuplex && handleSidesChange('double')}
+            disabled={!allowsDuplex}
+            style={{ opacity: allowsDuplex ? 1 : 0.45, cursor: allowsDuplex ? 'pointer' : 'not-allowed' }}
           >
-            <div className="option-top">
-              <span className="option-title">📑 Double-Sided</span>
-              <span className="price-tag-badge" style={{ background: '#ecfdf5', color: '#047857', borderColor: '#a7f3d0' }}>
-                🌱 Eco-Friendly
-              </span>
-            </div>
-            <p className="option-desc">Back-to-back duplex printing saves paper</p>
-          </div>
+            <span className="option-title">Double-Sided (Duplex)</span>
+            <span className="option-subtitle">
+              {allowsDuplex ? 'Eco-friendly • Saves paper' : '(Not offered at counter)'}
+            </span>
+          </button>
         </div>
       </div>
     </div>

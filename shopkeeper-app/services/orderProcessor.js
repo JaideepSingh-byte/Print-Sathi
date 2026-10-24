@@ -1,16 +1,14 @@
 /**
  * ============================================================================
- * PRINT-SATHI DESKTOP CLIENT: Automated Order Processor & State Machine
+ * PRINT-SATHI DESKTOP CLIENT: Automated Multi-File Order Processor
  * ============================================================================
  * 
- * State Transitions:
- * QUEUED -> PRINTING (Claimed) -> Validation -> PRINT_SUBMITTED -> COMPLETED
- * 
- * Safety Features:
- * - Atomic Claiming (prevents multi-terminal duplicate printing)
- * - Strict PDF signature validation (%PDF-)
- * - Dry-Run Mode (Safe simulation without hardware spooling)
- * - Auto-Print toggle & Emergency Stop
+ * Capabilities:
+ * - Sequentially processes multi-file orders (up to 10 files per order).
+ * - Downloads, verifies (%PDF- signature), and spools each file with its specific
+ *   copies, color mode, and single/duplex configuration.
+ * - Atomic claiming per terminal instance.
+ * - Dry-Run Mode & Auto-Print Toggle.
  */
 
 const fs = require('fs');
@@ -24,10 +22,11 @@ const printerService = require('./printerService');
 class OrderProcessor {
   constructor(instanceId) {
     this.instanceId = instanceId;
-    this.autoPrint = true; // Default auto-print enabled
-    this.dryRun = true;    // Default DRY-RUN mode enabled for safety
+    this.autoPrint = true;
+    this.dryRun = true; // Safe dry-run enabled by default
     this.isPaused = false;
     this.selectedPrinter = '';
+    this.targetShopId = 'shop_main_xerox'; // Default counter: Main Xerox Center
     this.isProcessing = false;
     this.activeJob = null;
     this.recentHistory = [];
@@ -72,40 +71,41 @@ class OrderProcessor {
       dryRun: this.dryRun,
       isPaused: this.isPaused,
       selectedPrinter: this.selectedPrinter,
+      targetShopId: this.targetShopId,
       isProcessing: this.isProcessing,
       activeJob: this.activeJob,
     };
     this.listeners.statusChange.forEach((cb) => cb(status));
   }
 
-  /**
-   * Initializes processor: recovers stale jobs & discovers local printers.
-   */
   async init() {
-    this.log('info', `Initializing Desktop Client (Instance: ${this.instanceId.slice(0, 8)})...`);
+    this.log('info', `Initializing Desktop Station (Instance: ${this.instanceId.slice(0, 8)}, Counter: ${this.targetShopId})...`);
 
-    // 1. Recover any stale interrupted jobs from prior crashes
+    // 1. Recover stale jobs from crashes
     const recovered = await firebaseService.recoverStaleJobs(this.instanceId);
     if (recovered.length > 0) {
-      this.log('warn', `Recovered ${recovered.length} stale job(s) into NEEDS_VERIFICATION state.`);
+      this.log('warn', `Recovered ${recovered.length} stale job(s) into verification state.`);
     }
 
-    // 2. Discover local Windows printers
+    // 2. Discover Windows printers
     const { printers, defaultPrinter } = await printerService.getAvailablePrinters();
     this.selectedPrinter = defaultPrinter || printers[0] || 'Microsoft Print to PDF';
-    this.log('success', `Hardware printer detected: "${this.selectedPrinter}" (${printers.length} total found).`);
+    this.log('success', `Physical printer selected: "${this.selectedPrinter}" (${printers.length} detected).`);
 
     if (this.dryRun) {
-      this.log('info', '🛡️ Safe Dry-Run Mode is ACTIVE (Virtual execution without hardware spooling).');
+      this.log('info', '🛡️ Safe Dry-Run Mode is ACTIVE (Virtual execution without hardware paper spooling).');
     }
 
     this.notifyStatus();
     return { printers, defaultPrinter: this.selectedPrinter };
   }
 
-  /**
-   * Evaluates incoming queue items and processes the next eligible job.
-   */
+  setTargetShopId(shopId) {
+    this.targetShopId = shopId || 'ALL';
+    this.log('info', `Target counter changed to: "${this.targetShopId}".`);
+    this.notifyStatus();
+  }
+
   async handleIncomingQueue(queue, allDocs = []) {
     const payload = {
       pending: queue,
@@ -114,20 +114,19 @@ class OrderProcessor {
     };
     this.listeners.queueChange.forEach((cb) => cb(payload));
 
-    // If currently processing a job, queue is paused, or auto-print is off, don't auto-consume
     if (this.isProcessing || this.isPaused || !this.autoPrint) {
       return;
     }
 
     if (queue.length === 0) return;
 
-    // Pick earliest FIFO queued job
+    // Pick next FIFO job
     const nextJob = queue[0];
     await this.processJob(nextJob);
   }
 
   /**
-   * End-to-end atomic job execution.
+   * End-to-end multi-file atomic job execution
    */
   async processJob(job) {
     if (this.isProcessing) return;
@@ -135,8 +134,21 @@ class OrderProcessor {
     this.activeJob = job;
     this.notifyStatus();
 
-    const { orderId, token, fileName, fileUrl } = job;
-    this.log('info', `Claiming Order #${token} (${orderId})...`);
+    const { orderId, token } = job;
+    const files = Array.isArray(job.files) && job.files.length > 0
+      ? job.files
+      : [
+          {
+            fileName: job.fileName || 'document.pdf',
+            fileUrl: job.fileUrl || '',
+            copies: job.copies || 1,
+            colorMode: job.colorMode || 'bw',
+            sides: job.sides || 'single',
+            calculatedPages: job.calculatedPages || 1,
+          },
+        ];
+
+    this.log('info', `Claiming Order #${token} (${orderId}) with ${files.length} document(s)...`);
 
     try {
       // 1. ATOMIC CLAIMING
@@ -147,36 +159,43 @@ class OrderProcessor {
         return;
       }
 
-      this.log('info', `Order #${token} claimed. Downloading and validating document...`);
+      this.log('info', `Order #${token} claimed. Processing ${files.length} file(s)...`);
 
-      // 2. DOWNLOAD & CACHE DOCUMENT
-      const tempPdfPath = await this.downloadDocument(orderId, fileName, fileUrl);
-
-      // 3. STRICT DOCUMENT & SPEC VALIDATION
-      this.validateDocumentAndSpecs(tempPdfPath, job);
-      this.log('success', `PDF validated: signature verified, ${job.calculatedPages || 1} pgs, ${job.copies} copies.`);
-
-      // 4. SUBMIT TO WINDOWS SPOOLER
+      // 2. MARK PRINT SUBMITTED
       await firebaseService.markJobPrintSubmitted(orderId, {
         printerName: this.selectedPrinter,
         isDryRun: this.dryRun,
+        totalFiles: files.length,
       });
 
-      this.log('info', `Sending to printer "${this.selectedPrinter}"...`);
-      const printResult = await printerService.printPdf(tempPdfPath, job, {
-        printerName: this.selectedPrinter,
-        isDryRun: this.dryRun,
-      });
+      // 3. SEQUENTIALLY DOWNLOAD, VALIDATE & SPOOL EVERY FILE
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        this.log('info', `[${i + 1}/${files.length}] Downloading "${file.fileName}"...`);
 
-      // 5. MARK AS COMPLETED
+        const tempPdfPath = await this.downloadDocument(orderId, `${i}_${file.fileName}`, file.fileUrl);
+        this.validateDocumentAndSpecs(tempPdfPath, file);
+
+        this.log(
+          'info',
+          `[${i + 1}/${files.length}] Spooling "${file.fileName}" (${file.copies} copies, ${file.colorMode.toUpperCase()}, ${file.sides})...`
+        );
+
+        await printerService.printPdf(tempPdfPath, file, {
+          printerName: this.selectedPrinter,
+          isDryRun: this.dryRun,
+        });
+      }
+
+      // 4. MARK ORDER COMPLETED
       await firebaseService.markJobCompleted(orderId, {
-        spoolerJobId: printResult.spoolerJobId,
         printerName: this.selectedPrinter,
         isDryRun: this.dryRun,
+        completedFilesCount: files.length,
       });
 
       const modeTag = this.dryRun ? '[DRY-RUN]' : '[PRINTED]';
-      this.log('success', `🎉 ${modeTag} Order #${token} completed successfully! Spool ID: ${printResult.spoolerJobId}`);
+      this.log('success', `🎉 ${modeTag} Order #${token} (${files.length} files) completed successfully!`);
       this.finishJob(orderId, 'COMPLETED');
     } catch (err) {
       this.log('error', `❌ Processing failed for Order #${token}: ${err.message}`);
@@ -193,7 +212,7 @@ class OrderProcessor {
         finalStatus: status,
         error,
       });
-      if (this.recentHistory.length > 20) this.recentHistory.pop();
+      if (this.recentHistory.length > 30) this.recentHistory.pop();
     }
     this.isProcessing = false;
     this.activeJob = null;
@@ -201,13 +220,13 @@ class OrderProcessor {
   }
 
   /**
-   * Downloads the remote/local PDF to secure temporary folder.
+   * Downloads remote or local PDF to temp spool directory
    */
   async downloadDocument(orderId, fileName, fileUrl) {
     const safeName = (fileName || 'document.pdf').replace(/[^a-zA-Z0-9._-]/g, '_');
     const localPath = path.join(this.spoolDir, `${orderId}_${safeName}`);
 
-    // If already local file path
+    // If file is already a valid local path
     if (fileUrl && fs.existsSync(fileUrl)) {
       fs.copyFileSync(fileUrl, localPath);
       return localPath;
@@ -221,7 +240,7 @@ class OrderProcessor {
 
         const req = client.get(fileUrl, (response) => {
           if (response.statusCode >= 400) {
-            return reject(new Error(`Server returned HTTP status ${response.statusCode}`));
+            return reject(new Error(`Server returned HTTP ${response.statusCode}`));
           }
           response.pipe(fileStream);
           fileStream.on('finish', () => {
@@ -233,39 +252,40 @@ class OrderProcessor {
           fs.unlink(localPath, () => {});
           reject(err);
         });
+
         req.setTimeout(12000, () => {
-          req.destroy(new Error('Download timed out after 12 seconds'));
+          req.destroy(new Error('Download timed out after 12s'));
         });
       });
     }
 
-    // Fallback: check sample documents folder if fileUrl was an in-browser blob
+    // Fallback sample file if local blob
     const sampleFallback = path.resolve(__dirname, '../../sample_documents/Sample_Lecture_Notes_5_Pages.pdf');
     if (fs.existsSync(sampleFallback)) {
       fs.copyFileSync(sampleFallback, localPath);
       return localPath;
     }
 
-    throw new Error('Valid PDF download link or file reference was not provided in order record.');
+    throw new Error('Valid PDF download link or file reference was not found.');
   }
 
   /**
-   * Validates PDF magic bytes signature (%PDF-) and configuration bounds.
+   * Validates %PDF- signature and configuration limits
    */
-  validateDocumentAndSpecs(filePath, job) {
+  validateDocumentAndSpecs(filePath, fileSpec) {
     if (!fs.existsSync(filePath)) {
-      throw new Error('Downloaded file not found on disk.');
+      throw new Error(`File does not exist on disk: ${filePath}`);
     }
 
     const stats = fs.statSync(filePath);
     if (stats.size === 0) {
-      throw new Error('PDF file is empty (0 bytes).');
+      throw new Error('PDF file is 0 bytes.');
     }
     if (stats.size > 80 * 1024 * 1024) {
-      throw new Error(`File size (${(stats.size / 1024 / 1024).toFixed(1)}MB) exceeds 80MB safety limit.`);
+      throw new Error(`File exceeds 80MB safety limit.`);
     }
 
-    // Verify PDF Magic Bytes (%PDF-)
+    // Inspect %PDF- signature
     const fd = fs.openSync(filePath, 'r');
     const buffer = Buffer.alloc(5);
     fs.readSync(fd, buffer, 0, 5, 0);
@@ -273,17 +293,15 @@ class OrderProcessor {
 
     const header = buffer.toString('utf-8');
     if (!header.startsWith('%PDF-')) {
-      throw new Error(`Corrupted file: Missing valid PDF header signature (Header: "${header}")`);
+      throw new Error(`Invalid PDF signature (Found: "${header}").`);
     }
 
-    // Validate quantities
-    const copies = parseInt(job.copies, 10);
+    const copies = parseInt(fileSpec.copies, 10);
     if (isNaN(copies) || copies < 1 || copies > 100) {
-      throw new Error(`Invalid copies count: ${job.copies}. Must be between 1 and 100.`);
+      throw new Error(`Invalid copies count: ${fileSpec.copies}.`);
     }
   }
 
-  // Toggle Controls
   setAutoPrint(enabled) {
     this.autoPrint = Boolean(enabled);
     this.log('info', `Auto-Print turned ${this.autoPrint ? 'ON' : 'OFF'}.`);
@@ -292,19 +310,19 @@ class OrderProcessor {
 
   setDryRun(enabled) {
     this.dryRun = Boolean(enabled);
-    this.log('warn', `Dry-Run Mode is now ${this.dryRun ? 'ENABLED (Virtual)' : 'DISABLED (Physical Hardware Printing)'}.`);
+    this.log('warn', `Dry-Run Mode is now ${this.dryRun ? 'ENABLED (Virtual Simulation)' : 'DISABLED (Hardware Printing)'}.`);
     this.notifyStatus();
   }
 
   setPrinter(printerName) {
     this.selectedPrinter = printerName;
-    this.log('info', `Target printer changed to: "${printerName}".`);
+    this.log('info', `Printer changed to: "${printerName}".`);
     this.notifyStatus();
   }
 
   setPaused(paused) {
     this.isPaused = Boolean(paused);
-    this.log(this.isPaused ? 'warn' : 'info', `Queue processing ${this.isPaused ? 'PAUSED (Emergency Stop)' : 'RESUMED'}.`);
+    this.log(this.isPaused ? 'warn' : 'info', `Queue ${this.isPaused ? 'PAUSED' : 'RESUMED'}.`);
     this.notifyStatus();
   }
 }

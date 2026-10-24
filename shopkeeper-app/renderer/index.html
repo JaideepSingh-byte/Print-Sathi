@@ -34,6 +34,17 @@
 
     <!-- 2. CONTROL CENTER BAR -->
     <section class="control-panel">
+      <!-- Target Shop / Counter Selector -->
+      <div class="control-group">
+        <label for="shopSelect">Station Pickup Counter</label>
+        <select id="shopSelect" class="styled-select">
+          <option value="shop_main_xerox">Counter 1 - Main Xerox Center</option>
+          <option value="shop_library">Counter 2 - Central Library</option>
+          <option value="shop_computer_center">Counter 3 - Computer Center</option>
+          <option value="ALL">🌐 All Campus Counters</option>
+        </select>
+      </div>
+
       <!-- Printer Selector -->
       <div class="control-group">
         <label for="printerSelect">Local Windows Printer</label>
@@ -44,7 +55,7 @@
 
       <!-- Auto-Print Toggle -->
       <div class="control-group">
-        <label>Automatic Queue Consumption</label>
+        <label>Automatic Spooling</label>
         <button id="toggleAutoPrintBtn" class="toggle-btn active">
           <span class="toggle-icon">⚡</span>
           <span id="autoPrintText">Auto-Print: ON</span>
@@ -109,9 +120,9 @@
             <thead>
               <tr>
                 <th>Token</th>
-                <th>Document</th>
+                <th>Documents</th>
                 <th>Copies / Mode</th>
-                <th>Sides</th>
+                <th>Sheets</th>
                 <th>Received</th>
               </tr>
             </thead>

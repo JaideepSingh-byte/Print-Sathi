@@ -1,67 +1,112 @@
 /**
  * ============================================================================
- * PRINT-SATHI COMPONENT: Document Upload Zone
+ * PRINT-SATHI COMPONENT: Multi-File Document Upload Zone
  * ============================================================================
  * 
- * What this component does in plain language:
- * 1. Provides a smooth Drag & Drop zone as well as a "Browse Files" button.
- * 2. Enforces a strict validation check: Only `.pdf` files are allowed.
- * 3. Shows a prominent badge: "Only PDF format supported (.pdf)".
- * 4. Shows a friendly inline error message if someone accidentally drops a .png,
- *    .docx, .jpg, etc.
- * 5. Automatically detects and displays file metadata:
- *    - File Name
- *    - Formatted File Size (e.g. 1.45 MB)
- *    - Estimated total page count calculated client-side
- * 6. Provides a "Remove / Replace File" button to easily switch files.
+ * Capabilities:
+ * 1. Supports multi-file selection (up to 10 files per order).
+ * 2. Enforces enterprise size guardrails:
+ *    - Max 20 MB per file
+ *    - Max 50 MB total order payload
+ * 3. Inspects and validates PDF MIME and binary header magic bytes (%PDF-).
+ * 4. Automatically computes page counts for every uploaded document.
+ * 5. Provides individual file removal, progress tracking, and "Add More Files".
+ * 6. Full backwards-compatibility with single-file parent handlers.
  */
 
 import React, { useState, useRef } from 'react';
-import { formatFileSize, getPdfPageCount } from '../utils/pdfHelper';
+import { 
+  formatFileSize, 
+  getPdfPageCount, 
+  validatePdfFile,
+  MAX_FILES_COUNT,
+  MAX_TOTAL_SIZE_BYTES
+} from '../utils/pdfHelper';
 
-export default function UploadZone({ activeFile, setActiveFile, setTotalPages, totalPages }) {
+export default function UploadZone({ 
+  filesList = [], 
+  setFilesList,
+  activeFile, 
+  setActiveFile, 
+  totalPages, 
+  setTotalPages 
+}) {
   const [isDragActive, setIsDragActive] = useState(false);
   const [errorMessage, setErrorMessage] = useState(null);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
   const fileInputRef = useRef(null);
 
+  // Compute total aggregate size
+  const totalSizeBytes = filesList.reduce((acc, f) => acc + (f.size || 0), 0);
+  const isLimitReached = filesList.length >= MAX_FILES_COUNT;
+
   /**
-   * Validates whether a file is strictly a PDF.
-   * Checks both file extension and MIME type.
+   * Validates and processes a batch of dropped or selected files
    */
-  const validateAndProcessFile = async (file) => {
+  const processFilesBatch = async (incomingFiles) => {
     setErrorMessage(null);
+    if (!incomingFiles || incomingFiles.length === 0) return;
 
-    if (!file) return;
+    const fileArray = Array.from(incomingFiles);
+    setIsProcessing(true);
 
-    // Check 1: File extension
-    const hasPdfExtension = file.name.toLowerCase().endsWith('.pdf');
-    // Check 2: MIME type
-    const isPdfMime = file.type === 'application/pdf' || file.type === '';
+    const newlyAdded = [];
+    let currentCombined = [...filesList];
 
-    if (!hasPdfExtension || !isPdfMime) {
-      setErrorMessage(
-        `Oops! "${file.name}" is not a PDF. Print-Sathi currently supports ONLY PDF files (.pdf) for reliable formatting.`
-      );
-      return;
+    for (const file of fileArray) {
+      const validation = await validatePdfFile(file, currentCombined);
+      if (!validation.isValid) {
+        setErrorMessage(validation.error);
+        break; // Stop on first error to give clear user feedback
+      }
+
+      // Fast client-side page detection
+      let detectedPages = 1;
+      try {
+        detectedPages = await getPdfPageCount(file);
+      } catch (e) {
+        detectedPages = 1;
+      }
+
+      const fileItem = {
+        id: `file_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        rawFile: file,
+        name: file.name,
+        size: file.size,
+        totalPages: detectedPages,
+        calculatedPages: detectedPages,
+        pageRangeMode: 'all',
+        pageRangeString: `All (${detectedPages} pgs)`,
+        copies: 1,
+        colorMode: 'bw',
+        sides: 'single',
+        ratePerPage: 2,
+        itemTotal: detectedPages * 2,
+      };
+
+      newlyAdded.push(fileItem);
+      currentCombined.push(fileItem);
     }
 
-    // Process valid PDF file
-    setIsAnalyzing(true);
-    setActiveFile(file);
+    if (newlyAdded.length > 0) {
+      if (setFilesList) {
+        setFilesList(currentCombined);
+      }
+      // Single-file backwards compatibility
+      if (setActiveFile && newlyAdded[0]) {
+        setActiveFile(newlyAdded[0].rawFile);
+        if (setTotalPages) {
+          setTotalPages(newlyAdded[0].totalPages);
+        }
+      }
+    }
 
-    try {
-      const detectedPages = await getPdfPageCount(file);
-      setTotalPages(detectedPages);
-    } catch (err) {
-      console.error('Error analyzing PDF:', err);
-      setTotalPages(1);
-    } finally {
-      setIsAnalyzing(false);
+    setIsProcessing(false);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
     }
   };
 
-  // Handle Drag & Drop events
   const handleDragOver = (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -80,29 +125,38 @@ export default function UploadZone({ activeFile, setActiveFile, setTotalPages, t
     setIsDragActive(false);
 
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      const droppedFile = e.dataTransfer.files[0];
-      validateAndProcessFile(droppedFile);
+      processFilesBatch(e.dataTransfer.files);
     }
   };
 
-  // Handle manual input change
   const handleFileInputChange = (e) => {
     if (e.target.files && e.target.files.length > 0) {
-      validateAndProcessFile(e.target.files[0]);
+      processFilesBatch(e.target.files);
     }
   };
 
-  // Remove active file and reset state
-  const handleRemoveFile = () => {
-    setActiveFile(null);
-    setTotalPages(1);
+  const handleRemoveItem = (id) => {
+    const updated = filesList.filter((f) => f.id !== id);
+    if (setFilesList) {
+      setFilesList(updated);
+    }
+    if (updated.length === 0) {
+      if (setActiveFile) setActiveFile(null);
+      if (setTotalPages) setTotalPages(1);
+    } else {
+      if (setActiveFile) setActiveFile(updated[0].rawFile);
+      if (setTotalPages) setTotalPages(updated[0].totalPages);
+    }
     setErrorMessage(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
   };
 
-  // Trigger file browser click
+  const handleClearAll = () => {
+    if (setFilesList) setFilesList([]);
+    if (setActiveFile) setActiveFile(null);
+    if (setTotalPages) setTotalPages(1);
+    setErrorMessage(null);
+  };
+
   const triggerBrowse = () => {
     if (fileInputRef.current) {
       fileInputRef.current.click();
@@ -121,13 +175,59 @@ export default function UploadZone({ activeFile, setActiveFile, setTotalPages, t
               <line x1="9" y1="15" x2="15" y2="15" />
             </svg>
           </span>
-          1. Upload Document
+          1. Upload Documents
         </h2>
         <span className="step-tag">Step 1 of 3</span>
       </div>
 
-      {/* Case A: No file uploaded yet -> Show Drag & Drop Zone */}
-      {!activeFile ? (
+      {/* Aggregate Status Indicator if files are uploaded */}
+      {filesList.length > 0 && (
+        <div style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          padding: '0.6rem 0.85rem',
+          marginBottom: '0.9rem',
+          background: 'rgba(30, 41, 59, 0.6)',
+          borderRadius: '8px',
+          border: '1px solid rgba(255, 255, 255, 0.08)',
+          fontSize: '0.82rem',
+          color: '#94a3b8'
+        }}>
+          <div>
+            <strong style={{ color: '#38bdf8' }}>{filesList.length}</strong> of {MAX_FILES_COUNT} files &bull;{' '}
+            <strong style={{ color: '#e2e8f0' }}>{formatFileSize(totalSizeBytes)}</strong> / 50 MB
+          </div>
+          <button
+            type="button"
+            onClick={handleClearAll}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: '#ef4444',
+              cursor: 'pointer',
+              fontSize: '0.78rem',
+              fontWeight: '600'
+            }}
+          >
+            Clear All
+          </button>
+        </div>
+      )}
+
+      {/* Hidden file input */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".pdf,application/pdf"
+        multiple
+        onChange={handleFileInputChange}
+        className="hidden-file-input"
+        style={{ display: 'none' }}
+      />
+
+      {/* Drag & Drop Area */}
+      {filesList.length === 0 ? (
         <div
           className={`upload-dropzone ${isDragActive ? 'drag-active' : ''}`}
           onDragOver={handleDragOver}
@@ -137,15 +237,6 @@ export default function UploadZone({ activeFile, setActiveFile, setTotalPages, t
           role="button"
           tabIndex={0}
         >
-          {/* Hidden real file input */}
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".pdf,application/pdf"
-            onChange={handleFileInputChange}
-            className="hidden-file-input"
-          />
-
           <div className="upload-icon-bubble">
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
@@ -155,9 +246,9 @@ export default function UploadZone({ activeFile, setActiveFile, setTotalPages, t
           </div>
 
           <p className="upload-instruction">
-            {isDragActive ? 'Release to drop your PDF here' : 'Drag & drop your PDF file here'}
+            {isDragActive ? 'Release to drop PDF files here' : 'Drag & drop PDF files here (Up to 10 files)'}
           </p>
-          <p className="upload-subtext">or click anywhere in this box to browse from your device</p>
+          <p className="upload-subtext">Supports multi-file select &bull; Max 20 MB/file &bull; Max 50 MB total</p>
 
           <button
             type="button"
@@ -172,10 +263,9 @@ export default function UploadZone({ activeFile, setActiveFile, setTotalPages, t
               <circle cx="8.5" cy="8.5" r="1.5" />
               <polyline points="21 15 16 10 5 21" />
             </svg>
-            Browse PDF File
+            Browse PDF Files
           </button>
 
-          {/* Strict restriction badge */}
           <div>
             <span className="format-notice-badge">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -183,78 +273,92 @@ export default function UploadZone({ activeFile, setActiveFile, setTotalPages, t
                 <line x1="12" y1="8" x2="12" y2="12" />
                 <line x1="12" y1="16" x2="12.01" y2="16" />
               </svg>
-              Only PDF format supported (.pdf)
+              Strictly PDF (.pdf) with %PDF- signature validation
             </span>
           </div>
         </div>
       ) : (
-        /* Case B: File is Active -> Display Metadata & Actions */
-        <div className="active-file-card">
-          <div className="file-header-row">
-            <div className="pdf-icon-box">
-              <span>PDF</span>
-            </div>
-            <div className="file-details">
-              <h4 className="file-name-text" title={activeFile.name}>
-                {activeFile.name}
-              </h4>
-              <div className="file-meta-row">
-                <span className="meta-pill">
-                  📊 {formatFileSize(activeFile.size)}
-                </span>
-                <span className="meta-pill">
-                  📄 {isAnalyzing ? 'Counting pages...' : `${totalPages} Page${totalPages > 1 ? 's' : ''}`}
-                </span>
+        /* Multi-File List */
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
+          {filesList.map((item, idx) => (
+            <div 
+              key={item.id || idx} 
+              className="active-file-card"
+              style={{ padding: '0.8rem 1rem', margin: 0 }}
+            >
+              <div className="file-header-row" style={{ alignItems: 'center' }}>
+                <div className="pdf-icon-box" style={{ width: '38px', height: '38px', fontSize: '0.75rem' }}>
+                  <span>PDF</span>
+                </div>
+                <div className="file-details">
+                  <h4 className="file-name-text" title={item.name} style={{ fontSize: '0.9rem' }}>
+                    {idx + 1}. {item.name}
+                  </h4>
+                  <div className="file-meta-row" style={{ marginTop: '0.2rem' }}>
+                    <span className="meta-pill" style={{ fontSize: '0.74rem' }}>
+                      📊 {formatFileSize(item.size)}
+                    </span>
+                    <span className="meta-pill" style={{ fontSize: '0.74rem' }}>
+                      📄 {item.totalPages} Page{item.totalPages > 1 ? 's' : ''}
+                    </span>
+                    <span className="verified-badge" style={{ fontSize: '0.72rem', padding: '0.15rem 0.5rem' }}>
+                      ✓ Verified
+                    </span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="remove-btn"
+                  onClick={() => handleRemoveItem(item.id)}
+                  title="Remove file"
+                  style={{ marginLeft: 'auto', padding: '0.35rem 0.65rem' }}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
+                  Remove
+                </button>
               </div>
             </div>
-          </div>
+          ))}
 
-          <div className="file-actions-row">
-            <div className="verified-badge">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
-                <polyline points="22 4 12 14.01 9 11.01" />
-              </svg>
-              PDF Verified & Ready for Queue
-            </div>
-
-            <div style={{ display: 'flex', gap: '0.5rem' }}>
+          {/* Add more files row if under limit */}
+          {!isLimitReached && (
+            <div style={{ display: 'flex', justifyContent: 'center', marginTop: '0.5rem' }}>
               <button
                 type="button"
                 className="secondary-action-btn"
-                style={{ padding: '0.4rem 0.85rem', fontSize: '0.82rem' }}
                 onClick={triggerBrowse}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.4rem',
+                  padding: '0.5rem 1rem',
+                  fontSize: '0.84rem'
+                }}
               >
-                Replace
-              </button>
-              <button
-                type="button"
-                className="remove-btn"
-                onClick={handleRemoveFile}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <line x1="12" y1="5" x2="12" y2="19" />
+                  <line x1="5" y1="12" x2="19" y2="12" />
                 </svg>
-                Remove
+                Add Another Document (+{MAX_FILES_COUNT - filesList.length} left)
               </button>
             </div>
-          </div>
-
-          {/* Hidden input for replace action */}
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".pdf,application/pdf"
-            onChange={handleFileInputChange}
-            className="hidden-file-input"
-          />
+          )}
         </div>
       )}
 
-      {/* Friendly Inline Error Alert for invalid file formats */}
+      {/* Processing Spinner */}
+      {isProcessing && (
+        <div style={{ textAlign: 'center', padding: '0.5rem', color: '#38bdf8', fontSize: '0.82rem' }}>
+          ⏳ Inspecting PDF signature and calculating pages...
+        </div>
+      )}
+
+      {/* Inline Error Message */}
       {errorMessage && (
-        <div className="inline-error-alert" role="alert">
+        <div className="inline-error-alert" role="alert" style={{ marginTop: '0.75rem' }}>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
             <circle cx="12" cy="12" r="10" />
             <line x1="12" y1="8" x2="12" y2="12" />

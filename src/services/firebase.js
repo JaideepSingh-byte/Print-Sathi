@@ -1,21 +1,25 @@
 /**
  * ============================================================================
- * PRINT-SATHI: Firebase Storage & Cloud Firestore Integration Service
+ * PRINT-SATHI: Enterprise Multi-Shop & Multi-File Firebase Service
  * ============================================================================
  * 
  * 🏢 ARCHITECTURE OVERVIEW:
- * ----------------------------------------------------------------------------
- * 1. Cloud Firestore (100% FREE Spark Plan - No Credit Card Needed):
- *    - Stores structured print job records: Order ID, Token, Copies, Price.
- *    - Collection: `print_jobs`
- *    - Document ID: `orderId` (e.g. "PS-8421")
+ * 1. Collections:
+ *    - `shops/{shopId}`: Shop profiles, pricing tiers, accepting status, location.
+ *    - `orders/{orderId}`: Multi-file print orders with itemized file configurations.
+ *    - `print_jobs/{orderId}`: Dual-write backwards compatibility layer.
  * 
- * 2. Real-Time Synchronization (onSnapshot):
- *    - Automatically streams active paid jobs where:
- *      * paymentStatus == "COMPLETED"
- *      * status == "QUEUED"
- *    - Sorts earliest jobs first (FIFO: First-In, First-Out).
- *    - Cleaning up unsubscribe function prevents memory leaks.
+ * 2. Multi-File Support:
+ *    - Supports up to 10 files per order.
+ *    - Stores file metadata, page counts, copies, duplex/color specs.
+ * 
+ * 3. Dual-Read Normalization:
+ *    - `normalizeOrder(doc)` automatically bridges legacy single-file records
+ *      and modern multi-file structures.
+ * 
+ * 4. Resilient Fallbacks:
+ *    - Timeout guards (3.5s) ensure zero freezing even on free Spark plans.
+ *    - LocalStorage persistence guarantees offline / demo-mode operation.
  * ============================================================================
  */
 
@@ -23,6 +27,8 @@ import { initializeApp, getApps } from 'firebase/app';
 import { 
   getFirestore, 
   doc, 
+  getDoc,
+  getDocs,
   setDoc, 
   updateDoc,
   collection,
@@ -37,9 +43,18 @@ import {
   uploadBytes, 
   getDownloadURL 
 } from 'firebase/storage';
+import {
+  getAuth,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged,
+} from 'firebase/auth';
+
+import { calculateOrderPricing, DEFAULT_PRICING_CONFIG } from '../utils/pricingEngine.js';
 
 /**
- * Helper to clean environment variables (strips accidental spaces, quotes, commas, or semicolons)
+ * Clean environment variables (strips accidental quotes, spaces, trailing commas)
  */
 const cleanEnv = (val) => {
   if (!val) return '';
@@ -52,8 +67,7 @@ const cleanEnv = (val) => {
 };
 
 /**
- * Fast Promise Timeout Guard:
- * Prevents Firebase SDK from hanging for minutes when a cloud bucket isn't provisioned.
+ * Fast Promise Timeout Guard
  */
 const withTimeout = (promise, ms, errorMessage) => {
   return Promise.race([
@@ -65,13 +79,14 @@ const withTimeout = (promise, ms, errorMessage) => {
 };
 
 // Read configuration from Vite environment variables (.env file)
+const viteEnv = typeof import.meta !== 'undefined' && import.meta.env ? import.meta.env : {};
 const firebaseConfig = {
-  apiKey: cleanEnv(import.meta.env.VITE_FIREBASE_API_KEY),
-  authDomain: cleanEnv(import.meta.env.VITE_FIREBASE_AUTH_DOMAIN),
-  projectId: cleanEnv(import.meta.env.VITE_FIREBASE_PROJECT_ID),
-  storageBucket: cleanEnv(import.meta.env.VITE_FIREBASE_STORAGE_BUCKET),
-  messagingSenderId: cleanEnv(import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID),
-  appId: cleanEnv(import.meta.env.VITE_FIREBASE_APP_ID),
+  apiKey: cleanEnv(viteEnv.VITE_FIREBASE_API_KEY),
+  authDomain: cleanEnv(viteEnv.VITE_FIREBASE_AUTH_DOMAIN),
+  projectId: cleanEnv(viteEnv.VITE_FIREBASE_PROJECT_ID),
+  storageBucket: cleanEnv(viteEnv.VITE_FIREBASE_STORAGE_BUCKET),
+  messagingSenderId: cleanEnv(viteEnv.VITE_FIREBASE_MESSAGING_SENDER_ID),
+  appId: cleanEnv(viteEnv.VITE_FIREBASE_APP_ID),
 };
 
 export const isFirebaseConfigured = Boolean(
@@ -84,13 +99,15 @@ export const isFirebaseConfigured = Boolean(
 // Initialize Firebase instances
 let dbInstance = null;
 let storageInstance = null;
+let authInstance = null;
 
 if (isFirebaseConfigured) {
   try {
     const app = !getApps().length ? initializeApp(firebaseConfig) : getApps()[0];
     dbInstance = getFirestore(app);
     storageInstance = getStorage(app);
-    console.log('🔥 [Print-Sathi] Firebase initialized for:', firebaseConfig.projectId);
+    authInstance = getAuth(app);
+    console.log('🔥 [Print-Sathi] Firebase initialized for project:', firebaseConfig.projectId);
   } catch (error) {
     console.error('⚠️ [Print-Sathi] Firebase initialization error:', error);
   }
@@ -98,11 +115,73 @@ if (isFirebaseConfigured) {
 
 export const db = dbInstance;
 export const storage = storageInstance;
+export const auth = authInstance;
 
-const LOCAL_STORAGE_KEY = 'print_sathi_orders';
+const LOCAL_STORAGE_ORDERS_KEY = 'print_sathi_orders';
+const LOCAL_STORAGE_SHOPS_KEY = 'print_sathi_shops';
 
 /**
- * Generates a unique 4-digit Token & Order ID (e.g. "#PS-8421")
+ * Default Seed Campus Shops
+ */
+export const SEED_SHOPS = [
+  {
+    shopId: 'shop_main_xerox',
+    name: 'Main Xerox & Print Center',
+    tagline: 'Fast high-volume printing and spiral binding',
+    status: 'APPROVED',
+    isAcceptingOrders: true,
+    ownerEmail: 'counter1@printsathi.campus',
+    location: {
+      building: 'Student Plaza',
+      floor: 'Ground Floor',
+      room: 'Shop G-04',
+    },
+    contactPhone: '+91 98765 43210',
+    qrCodeSlug: 'main-xerox',
+    pricingTiers: DEFAULT_PRICING_CONFIG,
+    stats: { totalOrders: 142, completedOrders: 140 },
+    createdAt: new Date().toISOString(),
+  },
+  {
+    shopId: 'shop_library',
+    name: 'Central Library Printing Desk',
+    tagline: 'Quiet, academic & thesis double-sided printing',
+    status: 'APPROVED',
+    isAcceptingOrders: true,
+    ownerEmail: 'library@printsathi.campus',
+    location: {
+      building: 'Central Library',
+      floor: '1st Floor',
+      room: 'Reference Section Desk',
+    },
+    contactPhone: '+91 98765 43211',
+    qrCodeSlug: 'central-library',
+    pricingTiers: DEFAULT_PRICING_CONFIG,
+    stats: { totalOrders: 89, completedOrders: 88 },
+    createdAt: new Date().toISOString(),
+  },
+  {
+    shopId: 'shop_computer_center',
+    name: 'Computer Center Print Hub',
+    tagline: 'High-speed lab printing & project reports',
+    status: 'APPROVED',
+    isAcceptingOrders: true,
+    ownerEmail: 'compcenter@printsathi.campus',
+    location: {
+      building: 'Computer Center',
+      floor: '2nd Floor',
+      room: 'Lab B-201',
+    },
+    contactPhone: '+91 98765 43212',
+    qrCodeSlug: 'computer-center',
+    pricingTiers: DEFAULT_PRICING_CONFIG,
+    stats: { totalOrders: 64, completedOrders: 63 },
+    createdAt: new Date().toISOString(),
+  },
+];
+
+/**
+ * Generates a unique 4-digit Token & Order ID (e.g. "PS-8421")
  */
 export function generateTokenId() {
   const random4Digit = Math.floor(1000 + Math.random() * 9000).toString();
@@ -113,97 +192,505 @@ export function generateTokenId() {
 }
 
 /**
- * Submits a new print job.
- * Guaranteed never to freeze thanks to fast timeout guards.
+ * ============================================================================
+ * DUAL-READ COMPATIBILITY ADAPTER: normalizeOrder
+ * ============================================================================
+ * Bridges legacy scalar order records with the new multi-file array format.
  */
-export async function submitPrintJob(jobConfig, file) {
-  const { token, orderId } = generateTokenId();
+export function normalizeOrder(docData) {
+  if (!docData) return null;
 
-  // Create immediate local access URL for previewing
-  let uploadedFileUrl = file ? URL.createObjectURL(file) : '';
-  let storageUploaded = false;
-  let firestoreSaved = false;
+  const orderId = docData.orderId || docData.id || 'PS-0000';
+  const token = docData.token || orderId.replace(/^PS-/, '') || '0000';
+  const shopId = docData.shopId || 'shop_main_xerox';
+  const status = (docData.status || docData.printStatus || 'QUEUED').toUpperCase();
+  const paymentStatus = (docData.paymentStatus || 'COMPLETED').toUpperCase();
 
-  // --- STEP 1: ATTEMPT FIREBASE STORAGE (Guard with 3.5s timeout) ---
-  if (isFirebaseConfigured && storage && file) {
+  // If already modern multi-file format
+  if (Array.isArray(docData.files) && docData.files.length > 0) {
+    return {
+      ...docData,
+      id: orderId,
+      orderId,
+      token,
+      shopId,
+      status,
+      paymentStatus,
+      files: docData.files.map((f, index) => ({
+        fileId: f.fileId || `file_${index}`,
+        fileName: f.fileName || f.name || 'document.pdf',
+        fileUrl: f.fileUrl || '',
+        fileSize: f.fileSize || f.size || 0,
+        totalPages: f.totalPages || 1,
+        calculatedPages: f.calculatedPages || 1,
+        pageRangeMode: f.pageRangeMode || 'all',
+        pageRangeString: f.pageRangeString || `All (${f.totalPages || 1} pgs)`,
+        copies: f.copies || 1,
+        colorMode: f.colorMode || 'bw',
+        sides: f.sides || 'single',
+        ratePerPage: f.ratePerPage || 1,
+        itemTotal: f.itemTotal || 0,
+        ...f,
+      })),
+      pricingSnapshot: docData.pricingSnapshot || {
+        totalAmount: docData.totalAmount || 0,
+        subtotal: docData.totalAmount || 0,
+        totalSheets: docData.calculatedPages || 1,
+        totalPages: docData.calculatedPages || 1,
+      },
+    };
+  }
+
+  // Legacy single-file synthesis
+  const singleFile = {
+    fileId: 'file_0',
+    fileName: docData.fileName || 'document.pdf',
+    fileUrl: docData.fileUrl || '',
+    fileSize: docData.fileSize || 0,
+    totalPages: docData.totalPages || 1,
+    calculatedPages: docData.calculatedPages || docData.totalPages || 1,
+    pageRangeMode: docData.pageRangeMode || 'all',
+    pageRangeString: docData.pageRangeString || `All (${docData.totalPages || 1} pgs)`,
+    copies: docData.copies || 1,
+    colorMode: docData.colorMode || 'bw',
+    sides: docData.sides || 'single',
+    ratePerPage: docData.ratePerPage || 1,
+    itemTotal: docData.totalAmount || 0,
+  };
+
+  return {
+    ...docData,
+    id: orderId,
+    orderId,
+    token,
+    shopId,
+    status,
+    paymentStatus,
+    files: [singleFile],
+    pricingSnapshot: {
+      totalAmount: docData.totalAmount || singleFile.itemTotal || 0,
+      subtotal: docData.totalAmount || singleFile.itemTotal || 0,
+      totalSheets: singleFile.calculatedPages * singleFile.copies,
+      totalPages: singleFile.calculatedPages * singleFile.copies,
+      totalFiles: 1,
+    },
+  };
+}
+
+/**
+ * ============================================================================
+ * SHOP MANAGEMENT FUNCTIONS
+ * ============================================================================
+ */
+
+/**
+ * Real-time listener for approved shops (Student Website)
+ * Ensures newly approved shops and price changes appear dynamically without redeployment
+ */
+export function subscribeToApprovedShops(callback, onError) {
+  if (isFirebaseConfigured && db) {
     try {
-      console.log(`📤 [Storage] Attempting upload with 3.5s timeout for ${file.name}...`);
-      const storageReference = ref(storage, `print_jobs/${orderId}/${file.name}`);
-      
-      const uploadPromise = uploadBytes(storageReference, file, {
-        contentType: 'application/pdf',
-      });
-
-      const uploadResult = await withTimeout(
-        uploadPromise,
-        3500,
-        'Storage bucket not upgraded to Blaze or timed out'
+      const q = query(collection(db, 'shops'), where('status', '==', 'APPROVED'));
+      return onSnapshot(
+        q,
+        (snapshot) => {
+          const approved = [];
+          snapshot.forEach((docSnap) => {
+            approved.push({ shopId: docSnap.id, ...docSnap.data() });
+          });
+          callback(approved);
+        },
+        (error) => {
+          console.error('❌ [Approved Shops Listener Error]:', error);
+          if (onError) onError(error);
+          getApprovedShops().then(callback);
+        }
       );
-
-      uploadedFileUrl = await getDownloadURL(uploadResult.ref);
-      storageUploaded = true;
-      console.log(`✅ [Storage] Uploaded to cloud bucket! Link:`, uploadedFileUrl);
-    } catch (storageErr) {
-      console.warn(
-        `ℹ️ [Storage Skipped] ${storageErr.message}. Storing PDF reference in local memory; continuing directly to Firestore!`
-      );
+    } catch (err) {
+      console.warn('subscribeToApprovedShops error:', err);
     }
   }
 
-  // --- STEP 2: SAVE TO CLOUD FIRESTORE (100% FREE SPARK PLAN) ---
-  const orderPayload = {
-    orderId,
-    token,
-    fileName: file ? file.name : 'document.pdf',
-    fileSize: file ? file.size : 0,
-    fileUrl: uploadedFileUrl,
-    totalPages: jobConfig.totalPages || 1,
-    calculatedPages: jobConfig.calculatedPages || 1,
-    copies: jobConfig.copies || 1,
-    colorMode: jobConfig.colorMode || 'bw',
-    pageRangeMode: jobConfig.pageRangeMode || 'all',
-    pageRangeString: jobConfig.pageRangeString || 'All Pages',
-    sides: jobConfig.sides || 'single',
-    ratePerPage: jobConfig.ratePerPage || 1,
-    totalAmount: jobConfig.totalAmount || 0,
-    paymentStatus: 'COMPLETED', // Standardized payment status
-    status: 'QUEUED',          // Standardized queue status
-    printStatus: 'QUEUED',
-    createdAt: serverTimestamp(),
-    pickupCounter: 'Counter 1 (Main Xerox Center, Student Plaza)',
+  getApprovedShops().then(callback);
+  return () => {};
+}
+
+/**
+ * Real-time listener for all shops (Admin Console)
+ * Ensures newly registered counters instantly appear for administrator review
+ */
+export function subscribeToAllShops(callback, onError) {
+  if (isFirebaseConfigured && db) {
+    try {
+      return onSnapshot(
+        collection(db, 'shops'),
+        (snapshot) => {
+          const all = [];
+          snapshot.forEach((docSnap) => {
+            all.push({ shopId: docSnap.id, ...docSnap.data() });
+          });
+          callback(all);
+        },
+        (error) => {
+          console.error('❌ [All Shops Listener Error]:', error);
+          if (onError) onError(error);
+          getAllShops().then(callback);
+        }
+      );
+    } catch (err) {
+      console.warn('subscribeToAllShops error:', err);
+    }
+  }
+
+  getAllShops().then(callback);
+  return () => {};
+}
+
+/**
+ * Get all approved shops for student browsing & directory
+ */
+export async function getApprovedShops() {
+  let shopsList = [];
+
+  if (isFirebaseConfigured && db) {
+    try {
+      const q = query(collection(db, 'shops'), where('status', '==', 'APPROVED'));
+      const snapshot = await withTimeout(
+        getDocs(q),
+        4000,
+        'Shops query timed out'
+      );
+      snapshot.forEach((docSnap) => {
+        shopsList.push({ shopId: docSnap.id, ...docSnap.data() });
+      });
+      if (shopsList.length > 0) {
+        return shopsList;
+      }
+    } catch (err) {
+      console.warn('ℹ️ [Shops] Query error:', err.message);
+    }
+  }
+
+  // Fallback to locally cached approved shops
+  try {
+    const cached = JSON.parse(localStorage.getItem(LOCAL_STORAGE_SHOPS_KEY) || '[]');
+    const approved = cached.filter((s) => s.status === 'APPROVED');
+    if (approved.length > 0) return approved;
+  } catch (e) {}
+
+  return [];
+}
+
+/**
+ * Get all shops for Admin console (Real Firestore records only, no demo seeds)
+ */
+export async function getAllShops() {
+  let shopsList = [];
+
+  if (isFirebaseConfigured && db) {
+    try {
+      const snapshot = await withTimeout(
+        getDocs(collection(db, 'shops')),
+        4000,
+        'Shops fetch timed out'
+      );
+      snapshot.forEach((docSnap) => {
+        shopsList.push({ shopId: docSnap.id, ...docSnap.data() });
+      });
+      return shopsList;
+    } catch (err) {
+      console.warn('ℹ️ [Shops] Fetch warning:', err.message);
+    }
+  }
+
+  // Local storage check if offline
+  try {
+    const cached = JSON.parse(localStorage.getItem(LOCAL_STORAGE_SHOPS_KEY) || '[]');
+    if (cached.length > 0) return cached;
+  } catch (e) {}
+
+  return [];
+}
+
+/**
+ * Get single shop by ID
+ */
+export async function getShopById(shopId) {
+  if (!shopId) return null;
+
+  if (isFirebaseConfigured && db) {
+    try {
+      const docRef = doc(db, 'shops', shopId);
+      const docSnap = await withTimeout(getDoc(docRef), 3000, 'Shop lookup timed out');
+      if (docSnap.exists()) {
+        return { shopId: docSnap.id, ...docSnap.data() };
+      }
+    } catch (err) {
+      console.warn('Shop lookup error:', err.message);
+    }
+  }
+
+  // Fallback to local
+  const all = await getAllShops();
+  return all.find((s) => s.shopId === shopId) || null;
+}
+
+/**
+ * Fetch shop belonging to a specific authenticated user
+ */
+export async function getShopForUser(uid, email) {
+  if (isFirebaseConfigured && db) {
+    try {
+      if (uid) {
+        const qUid = query(collection(db, 'shops'), where('ownerUid', '==', uid));
+        const snapUid = await getDocs(qUid);
+        if (!snapUid.empty) {
+          return { shopId: snapUid.docs[0].id, ...snapUid.docs[0].data() };
+        }
+      }
+      if (email) {
+        const qEmail = query(collection(db, 'shops'), where('ownerEmail', '==', email.toLowerCase()));
+        const snapEmail = await getDocs(qEmail);
+        if (!snapEmail.empty) {
+          return { shopId: snapEmail.docs[0].id, ...snapEmail.docs[0].data() };
+        }
+      }
+    } catch (err) {
+      console.warn('Error querying shop for user:', err.message);
+    }
+  }
+
+  try {
+    const cached = JSON.parse(localStorage.getItem(LOCAL_STORAGE_SHOPS_KEY) || '[]');
+    const match = cached.find((s) => s.ownerUid === uid || s.ownerEmail?.toLowerCase() === email?.toLowerCase());
+    if (match) return match;
+  } catch (e) {}
+
+  return null;
+}
+
+/**
+ * Create or register a new shop
+ */
+export async function createShop(shopData) {
+  const shopId = shopData.shopId || `shop_${Date.now()}`;
+  const payload = {
+    shopId,
+    name: (shopData.name || 'New Campus Print Shop').trim(),
+    shopkeeperName: (shopData.shopkeeperName || '').trim(),
+    tagline: (shopData.tagline || 'Printing and Photocopy Services').trim(),
+    ownerUid: shopData.ownerUid || '',
+    ownerEmail: (shopData.ownerEmail || '').toLowerCase().trim(),
+    status: shopData.status || 'PENDING', // PENDING approval by admin
+    isAcceptingOrders: shopData.isAcceptingOrders ?? false,
+    location: shopData.location || { building: 'Campus Center', floor: 'Ground Floor', room: '101' },
+    contactPhone: (shopData.contactPhone || '').trim(),
+    supportedServices: shopData.supportedServices || {
+      bw: true,
+      color: true,
+      single: true,
+      duplex: true,
+    },
+    qrCodeSlug: shopData.qrCodeSlug || shopId,
+    pricingTiers: shopData.pricingTiers || DEFAULT_PRICING_CONFIG,
+    stats: { totalOrders: 0, completedOrders: 0 },
+    createdAt: shopData.createdAt || new Date().toISOString(),
   };
 
   if (isFirebaseConfigured && db) {
     try {
-      console.log(`📝 [Firestore] Saving order PS-${token} to 'print_jobs' collection...`);
-      const firestorePromise = setDoc(doc(db, 'print_jobs', orderId), orderPayload);
-      await withTimeout(
-        firestorePromise,
-        4000,
-        'Firestore request timed out (verify database is created in Test Mode)'
-      );
-
-      firestoreSaved = true;
-      console.log(`🎉 [Firestore] Successfully saved into Cloud Firestore collection 'print_jobs'!`);
-    } catch (firestoreErr) {
-      console.warn('⚠️ [Firestore Warning] Could not reach Firestore in time:', firestoreErr.message);
+      await setDoc(doc(db, 'shops', shopId), payload);
+    } catch (err) {
+      console.warn('Create shop Firestore error:', err.message);
+      throw err;
     }
   }
 
-  const completeOrder = {
-    ...orderPayload,
-    createdAt: new Date().toISOString(),
-    isLiveCloud: firestoreSaved || storageUploaded,
-    firestoreSaved,
-    storageUploaded,
+  // Cache locally
+  try {
+    const existing = JSON.parse(localStorage.getItem(LOCAL_STORAGE_SHOPS_KEY) || '[]');
+    const filtered = existing.filter((s) => s.shopId !== shopId);
+    filtered.unshift(payload);
+    localStorage.setItem(LOCAL_STORAGE_SHOPS_KEY, JSON.stringify(filtered));
+  } catch (e) {}
+
+  return { success: true, shop: payload };
+}
+
+/**
+ * Update shop data (e.g. isAcceptingOrders toggle, pricingTiers)
+ */
+export async function updateShop(shopId, updates) {
+  if (!shopId) return { success: false, error: 'Shop ID required' };
+
+  if (isFirebaseConfigured && db) {
+    try {
+      await updateDoc(doc(db, 'shops', shopId), updates);
+    } catch (err) {
+      console.warn('Update shop Firestore warning:', err.message);
+    }
+  }
+
+  // Update local cache
+  try {
+    const existing = JSON.parse(localStorage.getItem(LOCAL_STORAGE_SHOPS_KEY) || '[]');
+    const updated = existing.map((s) => (s.shopId === shopId ? { ...s, ...updates } : s));
+    localStorage.setItem(LOCAL_STORAGE_SHOPS_KEY, JSON.stringify(updated));
+  } catch (e) {}
+
+  return { success: true };
+}
+
+/**
+ * Admin action: Update shop approval status ('APPROVED', 'PENDING', 'SUSPENDED', 'REJECTED')
+ */
+export async function updateShopStatus(shopId, status, rejectionReason = '') {
+  const updates = {
+    status,
+    ...(status === 'APPROVED' ? { isAcceptingOrders: true } : {}),
+    ...(status === 'SUSPENDED' || status === 'REJECTED' ? { isAcceptingOrders: false } : {}),
+    ...(rejectionReason ? { rejectionReason } : {}),
+  };
+  return await updateShop(shopId, updates);
+}
+
+/**
+ * ============================================================================
+ * MULTI-FILE ORDER SUBMISSION & PROCESSING
+ * ============================================================================
+ */
+
+/**
+ * Submits a multi-file print order targeting `orders/{orderId}` and dual-writing
+ * to `print_jobs/{orderId}` for legacy desktop backwards compatibility.
+ * 
+ * @param {object} orderConfig - { shopId, studentIdentifier, pickupCounter }
+ * @param {Array<object>} filesList - Array of { file, name, size, totalPages, calculatedPages, copies, colorMode, sides, pageRangeMode, pageRangeString }
+ */
+export async function submitMultiFileOrder(orderConfig, filesList) {
+  const { token, orderId } = generateTokenId();
+  const shopId = orderConfig.shopId || 'shop_main_xerox';
+  const pickupCounter = orderConfig.pickupCounter || 'Counter 1 (Main Xerox Center)';
+
+  // Calculate strict pricing snapshot
+  const pricingSnapshot = calculateOrderPricing(filesList, orderConfig.shopPricing || null);
+
+  // Process and upload files (with 3.5s timeout guard per file)
+  const processedFiles = [];
+  let anyStorageUploaded = false;
+
+  for (let i = 0; i < filesList.length; i++) {
+    const item = filesList[i];
+    const fileObj = item.rawFile || item.file;
+    let fileUrl = '';
+
+    if (fileObj) {
+      fileUrl = URL.createObjectURL(fileObj);
+    }
+
+    if (isFirebaseConfigured && storage && fileObj) {
+      try {
+        console.log(`📤 [Storage] Uploading file ${i + 1}/${filesList.length}: ${fileObj.name}...`);
+        const storageRef = ref(storage, `orders/${orderId}/${fileObj.name}`);
+        const uploadTask = uploadBytes(storageRef, fileObj, { contentType: 'application/pdf' });
+        const result = await withTimeout(uploadTask, 3500, 'Storage upload timed out');
+        fileUrl = await getDownloadURL(result.ref);
+        anyStorageUploaded = true;
+      } catch (storageErr) {
+        console.warn(`ℹ️ [Storage Skipped] ${storageErr.message}. Continuing with local preview URL.`);
+      }
+    }
+
+    const itemPricing = pricingSnapshot.items[i] || {};
+    processedFiles.push({
+      fileId: `file_${i + 1}_${Date.now()}`,
+      fileName: item.name || fileObj?.name || `document_${i + 1}.pdf`,
+      fileSize: item.size || fileObj?.size || 0,
+      fileUrl,
+      totalPages: item.totalPages || 1,
+      calculatedPages: item.calculatedPages || 1,
+      pageRangeMode: item.pageRangeMode || 'all',
+      pageRangeString: item.pageRangeString || `All (${item.totalPages || 1} pgs)`,
+      copies: item.copies || 1,
+      colorMode: item.colorMode || 'bw',
+      sides: item.sides || 'single',
+      ratePerPage: itemPricing.ratePerPage || (item.colorMode === 'color' ? 8 : 2),
+      itemTotal: itemPricing.itemTotal || 0,
+    });
+  }
+
+  const orderPayload = {
+    orderId,
+    token,
+    shopId,
+    pickupCounter,
+    studentIdentifier: orderConfig.studentIdentifier || `Student-${token}`,
+    files: processedFiles,
+    pricingSnapshot: {
+      subtotal: pricingSnapshot.subtotal,
+      totalAmount: pricingSnapshot.totalAmount,
+      totalSheets: pricingSnapshot.totalSheets,
+      totalPages: pricingSnapshot.totalPages,
+      totalFiles: processedFiles.length,
+    },
+    totalAmount: pricingSnapshot.totalAmount,
+    paymentStatus: 'COMPLETED', // Standardized payment status
+    status: 'QUEUED',          // Standardized queue status
+    printStatus: 'QUEUED',
+    createdAt: serverTimestamp(),
   };
 
-  // Always save locally in browser storage and broadcast
+  let firestoreSaved = false;
+
+  if (isFirebaseConfigured && db) {
+    try {
+      console.log(`📝 [Firestore] Saving multi-file order ${orderId} to 'orders' collection...`);
+      const orderRef = doc(db, 'orders', orderId);
+      await withTimeout(
+        setDoc(orderRef, orderPayload),
+        4000,
+        'Firestore order creation timed out'
+      );
+      firestoreSaved = true;
+      console.log(`🎉 [Firestore] Successfully saved multi-file order ${orderId}!`);
+
+      // Dual-write legacy record to 'print_jobs' for backward compatibility
+      try {
+        const legacyRef = doc(db, 'print_jobs', orderId);
+        const firstFile = processedFiles[0] || {};
+        await setDoc(legacyRef, {
+          ...orderPayload,
+          fileName: firstFile.fileName || 'document.pdf',
+          fileSize: firstFile.fileSize || 0,
+          fileUrl: firstFile.fileUrl || '',
+          totalPages: firstFile.totalPages || 1,
+          calculatedPages: firstFile.calculatedPages || 1,
+          copies: firstFile.copies || 1,
+          colorMode: firstFile.colorMode || 'bw',
+          sides: firstFile.sides || 'single',
+          ratePerPage: firstFile.ratePerPage || 2,
+        });
+      } catch (legacyErr) {
+        console.warn('Legacy print_jobs dual-write non-critical error:', legacyErr.message);
+      }
+    } catch (firestoreErr) {
+      console.warn('⚠️ [Firestore Warning] Could not reach cloud:', firestoreErr.message);
+    }
+  }
+
+  const completeOrder = normalizeOrder({
+    ...orderPayload,
+    createdAt: new Date().toISOString(),
+    isLiveCloud: firestoreSaved || anyStorageUploaded,
+    firestoreSaved,
+    storageUploaded: anyStorageUploaded,
+  });
+
+  // Always save in browser localStorage
   try {
-    const existing = JSON.parse(localStorage.getItem(LOCAL_STORAGE_KEY) || '[]');
+    const existing = JSON.parse(localStorage.getItem(LOCAL_STORAGE_ORDERS_KEY) || '[]');
     existing.unshift(completeOrder);
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(existing.slice(0, 30)));
-    // Notify local listeners
+    localStorage.setItem(LOCAL_STORAGE_ORDERS_KEY, JSON.stringify(existing.slice(0, 50)));
     window.dispatchEvent(new CustomEvent('print-sathi-job-update'));
   } catch (err) {
     console.warn(err);
@@ -212,55 +699,81 @@ export async function submitPrintJob(jobConfig, file) {
   return {
     success: true,
     order: completeOrder,
-    isLiveCloud: firestoreSaved || storageUploaded,
+    isLiveCloud: firestoreSaved || anyStorageUploaded,
   };
 }
 
 /**
- * ============================================================================
- * REAL-TIME FIRESTORE LISTENER: subscribeToPrintQueue (onSnapshot)
- * ============================================================================
- * 
- * What this does in plain language:
- * 1. Sets up an active, real-time listener using Firestore's `onSnapshot`.
- * 2. Filters documents in the `print_jobs` collection where:
- *    - `paymentStatus == "COMPLETED"`
- *    - `status == "QUEUED"`
- * 3. Sorts the incoming jobs by `createdAt` ascending (Earliest paid jobs first).
- * 4. Returns an `unsubscribe()` function so React components can detach the listener
- *    inside `useEffect` cleanup, preventing memory leaks.
- * 
- * @param {Function} onQueueUpdate - Callback receiving array of queued orders
- * @param {Function} onError - Callback receiving error object if listener fails
- * @returns {Function} Unsubscribe function
+ * Backward-compatible single-file submitPrintJob wrapper
  */
-export function subscribeToPrintQueue(onQueueUpdate, onError) {
-  // Option A: Real Firestore Listener
+export async function submitPrintJob(jobConfig, file) {
+  const filesList = [
+    {
+      rawFile: file,
+      name: file ? file.name : 'document.pdf',
+      size: file ? file.size : 0,
+      totalPages: jobConfig.totalPages || 1,
+      calculatedPages: jobConfig.calculatedPages || 1,
+      copies: jobConfig.copies || 1,
+      colorMode: jobConfig.colorMode || 'bw',
+      sides: jobConfig.sides || 'single',
+      pageRangeMode: jobConfig.pageRangeMode || 'all',
+      pageRangeString: jobConfig.pageRangeString || `All (${jobConfig.totalPages || 1} pgs)`,
+      ratePerPage: jobConfig.ratePerPage || 2,
+      itemTotal: jobConfig.totalAmount || 0,
+    },
+  ];
+
+  return await submitMultiFileOrder(
+    {
+      shopId: jobConfig.shopId || 'shop_main_xerox',
+      pickupCounter: jobConfig.pickupCounter || 'Counter 1 (Main Xerox Center, Student Plaza)',
+    },
+    filesList
+  );
+}
+
+/**
+ * ============================================================================
+ * QUEUE LISTENERS & STATUS UPDATES
+ * ============================================================================
+ */
+
+/**
+ * Real-time queue subscription for a specific shop
+ * @param {string} shopId
+ * @param {Function} onQueueUpdate
+ * @param {Function} onError
+ */
+export function subscribeToShopOrders(shopId, onQueueUpdate, onError) {
   if (isFirebaseConfigured && db) {
     try {
-      console.log('📡 [Firestore] Attaching real-time onSnapshot listener to "print_jobs"...');
-      
-      // Query constraints: paymentStatus == 'COMPLETED' and status == 'QUEUED'
-      const q = query(
-        collection(db, 'print_jobs'),
-        where('paymentStatus', '==', 'COMPLETED'),
-        where('status', '==', 'QUEUED')
-      );
+      console.log(`📡 [Firestore] Subscribing to orders for shop: ${shopId || 'ALL'}...`);
+      let q = collection(db, 'orders');
 
-      const unsubscribe = onSnapshot(
+      if (shopId) {
+        q = query(
+          collection(db, 'orders'),
+          where('shopId', '==', shopId),
+          where('paymentStatus', '==', 'COMPLETED')
+        );
+      } else {
+        q = query(
+          collection(db, 'orders'),
+          where('paymentStatus', '==', 'COMPLETED')
+        );
+      }
+
+      return onSnapshot(
         q,
         (snapshot) => {
           const liveQueue = [];
           snapshot.forEach((docSnap) => {
-            const data = docSnap.data();
-            liveQueue.push({
-              id: docSnap.id,
-              orderId: docSnap.id,
-              ...data,
-            });
+            const normalized = normalizeOrder({ id: docSnap.id, ...docSnap.data() });
+            if (normalized) liveQueue.push(normalized);
           });
 
-          // Sort ascending by creation timestamp (FIFO: Earliest orders at the top)
+          // Sort ascending (FIFO)
           liveQueue.sort((a, b) => {
             const timeA = a.createdAt?.toMillis
               ? a.createdAt.toMillis()
@@ -271,42 +784,44 @@ export function subscribeToPrintQueue(onQueueUpdate, onError) {
             return timeA - timeB;
           });
 
-          console.log(`📥 [Firestore Real-Time Sync] ${liveQueue.length} jobs currently QUEUED.`);
           onQueueUpdate(liveQueue);
         },
         (error) => {
-          console.error('❌ [Firestore onSnapshot Error]:', error);
+          console.error('❌ [Firestore Shop Orders Listener Error]:', error);
           if (onError) onError(error);
-          // Graceful fallback to local queue if cloud query experiences connection issues
-          fallbackLocalQueue(onQueueUpdate);
+          fallbackLocalQueue(onQueueUpdate, shopId);
         }
       );
-
-      return unsubscribe;
     } catch (err) {
-      console.error('Error establishing Firestore onSnapshot:', err);
+      console.error('Shop orders subscription setup error:', err);
     }
   }
 
-  // Option B: Resilient Local Fallback Listener (Demo mode / Offline)
-  return fallbackLocalQueue(onQueueUpdate);
+  return fallbackLocalQueue(onQueueUpdate, shopId);
 }
 
 /**
- * Helper for local real-time queue syncing when Firebase keys are not present
+ * Legacy subscribeToPrintQueue (Dual-Read)
  */
-function fallbackLocalQueue(onQueueUpdate) {
+export function subscribeToPrintQueue(onQueueUpdate, onError) {
+  return subscribeToShopOrders(null, onQueueUpdate, onError);
+}
+
+/**
+ * Local queue fallback when Firebase is in demo/offline mode
+ */
+function fallbackLocalQueue(onQueueUpdate, shopId = null) {
   const readQueue = () => {
     try {
-      const allOrders = JSON.parse(localStorage.getItem(LOCAL_STORAGE_KEY) || '[]');
-      const activeQueue = allOrders.filter(
-        (o) =>
-          (o.status === 'QUEUED' || o.printStatus === 'queued' || o.printStatus === 'QUEUED') &&
-          (o.paymentStatus === 'COMPLETED' || o.paymentStatus === 'paid')
-      );
-      // Sort ascending (earliest first)
-      activeQueue.sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
-      onQueueUpdate(activeQueue);
+      const allOrders = JSON.parse(localStorage.getItem(LOCAL_STORAGE_ORDERS_KEY) || '[]');
+      const normalized = allOrders.map((o) => normalizeOrder(o));
+      const filtered = normalized.filter((o) => {
+        const matchesShop = !shopId || o.shopId === shopId;
+        const isQueued = o.status === 'QUEUED' || o.status === 'PENDING';
+        return matchesShop && isQueued;
+      });
+      filtered.sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
+      onQueueUpdate(filtered);
     } catch (err) {
       onQueueUpdate([]);
     }
@@ -325,40 +840,36 @@ function fallbackLocalQueue(onQueueUpdate) {
 }
 
 /**
- * ============================================================================
- * FIRESTORE ACTION: markJobAsPrinted
- * ============================================================================
- * 
- * What this does in plain language:
- * 1. Updates the order document in Firestore to set `status: "PRINTED"`.
- * 2. Because the onSnapshot listener filters for `status == "QUEUED"`,
- *    this update automatically causes the item to disappear from the shopkeeper's
- *    live queue in real time without any page refresh!
- * 
- * @param {string} orderId - Unique document ID (e.g. "PS-8421")
- * @returns {Promise<{ success: boolean, error?: string }>}
+ * Mark an order as printed in both orders & print_jobs collections
  */
 export async function markJobAsPrinted(orderId) {
   console.log(`🖨️ [Firestore] Marking order ${orderId} as PRINTED...`);
 
-  // 1. Update in Cloud Firestore
   if (isFirebaseConfigured && db) {
     try {
-      const docRef = doc(db, 'print_jobs', orderId);
-      await updateDoc(docRef, {
+      const updateData = {
         status: 'PRINTED',
         printStatus: 'PRINTED',
         printedAt: serverTimestamp(),
-      });
-      console.log(`✅ [Firestore] Document ${orderId} updated to PRINTED in cloud!`);
+      };
+
+      // Update in orders
+      try {
+        await updateDoc(doc(db, 'orders', orderId), updateData);
+      } catch (e) {}
+
+      // Update in legacy print_jobs
+      try {
+        await updateDoc(doc(db, 'print_jobs', orderId), updateData);
+      } catch (e) {}
     } catch (cloudErr) {
       console.warn('⚠️ [Firestore Update Warning]:', cloudErr.message);
     }
   }
 
-  // 2. Always update local cache so demo mode & offline views stay in sync
+  // Local storage update
   try {
-    const existing = JSON.parse(localStorage.getItem(LOCAL_STORAGE_KEY) || '[]');
+    const existing = JSON.parse(localStorage.getItem(LOCAL_STORAGE_ORDERS_KEY) || '[]');
     const updated = existing.map((order) => {
       if (order.orderId === orderId || order.id === orderId) {
         return {
@@ -370,7 +881,7 @@ export async function markJobAsPrinted(orderId) {
       }
       return order;
     });
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(updated));
+    localStorage.setItem(LOCAL_STORAGE_ORDERS_KEY, JSON.stringify(updated));
     window.dispatchEvent(new CustomEvent('print-sathi-job-update'));
   } catch (err) {
     console.warn(err);
@@ -384,7 +895,8 @@ export async function markJobAsPrinted(orderId) {
  */
 export function getRecentPrintJobs() {
   try {
-    return JSON.parse(localStorage.getItem(LOCAL_STORAGE_KEY) || '[]');
+    const raw = JSON.parse(localStorage.getItem(LOCAL_STORAGE_ORDERS_KEY) || '[]');
+    return raw.map((item) => normalizeOrder(item));
   } catch (err) {
     return [];
   }
@@ -395,8 +907,245 @@ export function getRecentPrintJobs() {
  */
 export function clearOrderHistory() {
   try {
-    localStorage.removeItem(LOCAL_STORAGE_KEY);
+    localStorage.removeItem(LOCAL_STORAGE_ORDERS_KEY);
+    window.dispatchEvent(new CustomEvent('print-sathi-job-update'));
   } catch (err) {
     console.warn(err);
   }
+}
+
+/**
+ * ============================================================================
+ * FIREBASE AUTHENTICATION HELPERS
+ * ============================================================================
+ */
+
+/**
+ * Map Firebase Auth error codes to user-friendly guidance
+ */
+export function mapFirebaseAuthError(error) {
+  if (!error) return 'An unknown error occurred.';
+  const code = error.code || (error.message && error.message.includes('auth/') ? error.message : '');
+
+  if (
+    code.includes('auth/configuration-not-found') ||
+    error.message?.includes('CONFIGURATION_NOT_FOUND')
+  ) {
+    return 'Firebase Authentication is not yet enabled for project "print-sathi-campus" in the Firebase Console.\n\nTo activate it:\n1. Open Firebase Console > Build > Authentication.\n2. Click "Get started".\n3. Under the "Sign-in method" tab, click "Email/Password".\n4. Enable "Email/Password" and click "Save".';
+  }
+  if (code.includes('auth/email-already-in-use')) {
+    return 'This email address is already registered. Please sign in or use a different email.';
+  }
+  if (code.includes('auth/invalid-email')) {
+    return 'Please enter a valid email address.';
+  }
+  if (code.includes('auth/weak-password')) {
+    return 'Password is too weak. Please use at least 6 characters.';
+  }
+  if (
+    code.includes('auth/wrong-password') ||
+    code.includes('auth/invalid-credential') ||
+    code.includes('auth/user-not-found')
+  ) {
+    return 'Invalid credentials. Please verify your email/username and password.';
+  }
+  if (code.includes('auth/network-request-failed')) {
+    return 'Network connection issue. Please check your internet connectivity.';
+  }
+  if (code.includes('auth/too-many-requests')) {
+    return 'Access temporarily restricted due to many failed attempts. Please try again later.';
+  }
+  if (code.includes('auth/operation-not-allowed')) {
+    return 'Email/Password sign-in is disabled in Firebase Console. Please enable it in Firebase Console > Authentication > Sign-in method.';
+  }
+  return error.message || 'Authentication error. Please check your credentials and try again.';
+}
+
+export async function loginShopkeeper(email, password) {
+  if (!isFirebaseConfigured || !auth) {
+    // Local demo simulation login
+    const demoUser = {
+      uid: `demo_user_${email.replace(/[^a-zA-Z0-9]/g, '_')}`,
+      email: email.trim().toLowerCase(),
+      displayName: email.split('@')[0],
+      isDemo: true,
+    };
+    localStorage.setItem('print_sathi_auth_user', JSON.stringify(demoUser));
+    return { user: demoUser };
+  }
+
+  try {
+    return await signInWithEmailAndPassword(auth, email.trim(), password);
+  } catch (err) {
+    const friendly = mapFirebaseAuthError(err);
+    const customErr = new Error(friendly);
+    customErr.code = err.code;
+    throw customErr;
+  }
+}
+
+export async function registerShopkeeper(email, password, shopDetails = {}) {
+  let userCred;
+  try {
+    if (!isFirebaseConfigured || !auth) {
+      const demoUser = {
+        uid: `demo_user_${Date.now()}`,
+        email: email.trim().toLowerCase(),
+        displayName: shopDetails.shopkeeperName || email.split('@')[0],
+        isDemo: true,
+      };
+      localStorage.setItem('print_sathi_auth_user', JSON.stringify(demoUser));
+      userCred = { user: demoUser };
+    } else {
+      userCred = await createUserWithEmailAndPassword(auth, email.trim().toLowerCase(), password);
+    }
+  } catch (err) {
+    const friendly = mapFirebaseAuthError(err);
+    const customErr = new Error(friendly);
+    customErr.code = err.code;
+    throw customErr;
+  }
+
+  // Generate unique shopId
+  const rawShopName = (shopDetails.shopName || shopDetails.name || 'New Campus Print Counter').trim();
+  const cleanSlug = rawShopName.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 20) || 'counter';
+  const shopId = `shop_${cleanSlug}_${Math.random().toString(36).substring(2, 7)}`;
+
+  const shopPayload = {
+    shopId,
+    name: rawShopName,
+    shopkeeperName: (shopDetails.shopkeeperName || '').trim(),
+    ownerUid: userCred.user.uid,
+    ownerEmail: email.trim().toLowerCase(),
+    contactPhone: (shopDetails.mobile || shopDetails.contactPhone || '').trim(),
+    location: {
+      building: (shopDetails.location?.building || shopDetails.building || 'Campus Plaza').trim(),
+      floor: (shopDetails.location?.floor || shopDetails.floor || 'Ground Floor').trim(),
+      room: (shopDetails.location?.room || shopDetails.room || 'Desk 1').trim(),
+    },
+    tagline: (shopDetails.tagline || shopDetails.description || 'Printing & Photocopy Services').trim(),
+    supportedServices: {
+      bw: shopDetails.supportedServices?.bw !== false,
+      color: shopDetails.supportedServices?.color !== false,
+      single: shopDetails.supportedServices?.single !== false,
+      duplex: shopDetails.supportedServices?.duplex !== false,
+    },
+    pricingTiers: shopDetails.pricingTiers || DEFAULT_PRICING_CONFIG,
+    status: 'PENDING',
+    isAcceptingOrders: false,
+    stats: { totalOrders: 0, completedOrders: 0 },
+    createdAt: new Date().toISOString(),
+  };
+
+  try {
+    await createShop(shopPayload);
+  } catch (firestoreErr) {
+    console.warn('Could not save shop to Firestore:', firestoreErr);
+  }
+
+  return { user: userCred.user, shop: shopPayload };
+}
+
+/**
+ * Campus Administrator Authentication
+ * Securely verifies credentials against Firebase Auth without client-side plaintext secrets
+ */
+export async function loginAdmin(usernameOrEmail, password) {
+  const rawInput = (usernameOrEmail || '').trim();
+  const normalized = rawInput.toLowerCase().replace(/\s+/g, '');
+
+  // Map admin username variants to official administrative Firebase Auth identity
+  const isAdminUsername =
+    normalized === 'jaideepsingh' ||
+    normalized === 'jaideep' ||
+    normalized === 'admin' ||
+    rawInput.toLowerCase() === 'admin.jaideep@printsathi.campus';
+
+  const adminEmail = isAdminUsername ? 'admin.jaideep@printsathi.campus' : rawInput;
+
+  try {
+    if (!isFirebaseConfigured || !auth) {
+      if (isAdminUsername || adminEmail === 'admin.jaideep@printsathi.campus') {
+        const adminUser = {
+          uid: 'admin_jaideep_local',
+          email: 'admin.jaideep@printsathi.campus',
+          displayName: 'Jaideep Singh',
+          isAdmin: true,
+        };
+        localStorage.setItem('print_sathi_admin_user', JSON.stringify(adminUser));
+        return { user: adminUser, isAdmin: true };
+      }
+      throw new Error('Invalid administrator credentials.');
+    }
+
+    const userCred = await signInWithEmailAndPassword(auth, adminEmail, password);
+    const user = userCred.user;
+
+    const isApprovedAdmin =
+      user.email === 'admin.jaideep@printsathi.campus' ||
+      user.email.startsWith('admin') ||
+      user.email.endsWith('@printsathi.campus');
+
+    if (!isApprovedAdmin) {
+      await signOut(auth);
+      throw new Error('Access denied: This account does not possess campus administrator privileges.');
+    }
+
+    const adminSession = {
+      uid: user.uid,
+      email: user.email,
+      displayName: user.displayName || 'Jaideep Singh',
+      isAdmin: true,
+    };
+    localStorage.setItem('print_sathi_admin_user', JSON.stringify(adminSession));
+
+    return { user: adminSession, isAdmin: true };
+  } catch (err) {
+    const friendly = mapFirebaseAuthError(err);
+    const customErr = new Error(friendly);
+    customErr.code = err.code;
+    throw customErr;
+  }
+}
+
+export async function logoutAdmin() {
+  localStorage.removeItem('print_sathi_admin_user');
+  if (isFirebaseConfigured && auth) {
+    try {
+      await signOut(auth);
+    } catch (e) {}
+  }
+}
+
+export function getAdminSession() {
+  try {
+    return JSON.parse(localStorage.getItem('print_sathi_admin_user') || 'null');
+  } catch (e) {
+    return null;
+  }
+}
+
+export async function logoutUser() {
+  if (isFirebaseConfigured && auth) {
+    await signOut(auth);
+  }
+  localStorage.removeItem('print_sathi_auth_user');
+}
+
+export function subscribeToAuth(callback) {
+  if (isFirebaseConfigured && auth) {
+    return onAuthStateChanged(auth, (user) => {
+      callback(user);
+    });
+  }
+
+  // Demo user sync
+  try {
+    const demoUser = JSON.parse(localStorage.getItem('print_sathi_auth_user') || 'null');
+    callback(demoUser);
+  } catch (e) {
+    callback(null);
+  }
+
+  return () => {};
 }

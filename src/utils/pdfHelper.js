@@ -3,14 +3,20 @@
  * PRINT-SATHI UTILITY: PDF Helper & Page Calculation Engine
  * ============================================================================
  * 
- * What this file does in plain language:
- * 1. Counts the actual number of pages inside an uploaded PDF directly in the 
- *    browser without needing an expensive backend server.
- * 2. Parses custom page ranges (like "1-5, 8, 11-13") entered by students into
- *    an exact count of unique pages to print.
- * 3. Formats raw byte sizes (e.g. 2,450,000 bytes) into human-readable text 
- *    (e.g. "2.34 MB").
+ * Features:
+ * 1. Counts actual pages inside an uploaded PDF directly in the browser.
+ * 2. Strict PDF signature (%PDF-) inspection via binary magic bytes.
+ * 3. Enforces enterprise upload limits:
+ *    - Max 10 files per order
+ *    - Max 20 MB per individual file
+ *    - Max 50 MB total combined order payload
+ * 4. Parses custom page ranges (like "1-5, 8, 11-13") with boundary validation.
+ * 5. Formats raw byte sizes (e.g. "2.34 MB").
  */
+
+export const MAX_FILES_COUNT = 10;
+export const MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024; // 20 MB
+export const MAX_TOTAL_SIZE_BYTES = 50 * 1024 * 1024; // 50 MB
 
 /**
  * Formats bytes into human-friendly strings (KB, MB)
@@ -26,12 +32,102 @@ export function formatFileSize(bytes) {
 }
 
 /**
- * Inspects a PDF file binary client-side to detect its page count.
+ * Strictly inspects the first 5 bytes of a file to verify the "%PDF-" header signature.
+ * Prevents disguised files (e.g., .exe or .png renamed to .pdf).
  * 
- * How it works:
- * - Every standard PDF contains internal dictionaries specifying page nodes.
- * - The root pages dictionary includes "/Type /Pages /Count N".
- * - This function quickly scans the binary array buffer using a standard Latin-1 decoder.
+ * @param {File} file 
+ * @returns {Promise<{ isValid: boolean, error?: string }>}
+ */
+export async function validatePdfMagicBytes(file) {
+  if (!file) return { isValid: false, error: 'No file provided.' };
+
+  try {
+    const slice = file.slice(0, 5);
+    const arrayBuffer = await slice.arrayBuffer();
+    const header = new TextDecoder('latin1').decode(arrayBuffer);
+
+    if (header.startsWith('%PDF-')) {
+      return { isValid: true };
+    }
+    return {
+      isValid: false,
+      error: `File "${file.name}" lacks a valid PDF header signature (Found: "${header}").`,
+    };
+  } catch (err) {
+    return { isValid: false, error: `Could not read file header: ${err.message}` };
+  }
+}
+
+/**
+ * Full file validation against size, type, count, and magic bytes.
+ * 
+ * @param {File} file 
+ * @param {Array} existingFiles 
+ * @returns {Promise<{ isValid: boolean, error?: string }>}
+ */
+export async function validatePdfFile(file, existingFiles = []) {
+  if (!file) return { isValid: false, error: 'File is missing.' };
+
+  // 1. Extension check
+  if (!file.name.toLowerCase().endsWith('.pdf')) {
+    return {
+      isValid: false,
+      error: `"${file.name}" is not a PDF. Only .pdf files are supported.`,
+    };
+  }
+
+  // 2. MIME type check
+  if (file.type && file.type !== 'application/pdf') {
+    return {
+      isValid: false,
+      error: `"${file.name}" has invalid MIME type: ${file.type}. Expected application/pdf.`,
+    };
+  }
+
+  // 3. Max files count check
+  if (existingFiles.length >= MAX_FILES_COUNT) {
+    return {
+      isValid: false,
+      error: `Maximum file limit reached (${MAX_FILES_COUNT} files per order).`,
+    };
+  }
+
+  // 4. Duplicate name check
+  if (existingFiles.some((f) => f.name === file.name && f.size === file.size)) {
+    return {
+      isValid: false,
+      error: `"${file.name}" is already in your upload queue.`,
+    };
+  }
+
+  // 5. Individual file size limit (20 MB)
+  if (file.size > MAX_FILE_SIZE_BYTES) {
+    return {
+      isValid: false,
+      error: `"${file.name}" (${formatFileSize(file.size)}) exceeds the 20 MB per-file limit.`,
+    };
+  }
+
+  // 6. Total combined size limit (50 MB)
+  const currentTotal = existingFiles.reduce((acc, f) => acc + (f.size || 0), 0);
+  if (currentTotal + file.size > MAX_TOTAL_SIZE_BYTES) {
+    return {
+      isValid: false,
+      error: `Adding "${file.name}" would exceed the total order limit of 50 MB.`,
+    };
+  }
+
+  // 7. Binary signature check (%PDF-)
+  const magicCheck = await validatePdfMagicBytes(file);
+  if (!magicCheck.isValid) {
+    return magicCheck;
+  }
+
+  return { isValid: true };
+}
+
+/**
+ * Inspects a PDF file binary client-side to detect its page count.
  * 
  * @param {File} file - The uploaded .pdf File object
  * @returns {Promise<number>} Number of pages detected (defaults to 1 if unreadable)
@@ -39,7 +135,6 @@ export function formatFileSize(bytes) {
 export async function getPdfPageCount(file) {
   try {
     const arrayBuffer = await file.arrayBuffer();
-    // Latin-1 preserves all 8-bit characters without corruption
     const text = new TextDecoder('latin1').decode(arrayBuffer);
 
     // Technique A: Look for /Type /Pages ... /Count X
@@ -49,7 +144,6 @@ export async function getPdfPageCount(file) {
         .map((m) => parseInt(m[1], 10))
         .filter((num) => !isNaN(num) && num > 0);
       if (counts.length > 0) {
-        // The root catalog has the maximum count
         return Math.max(...counts);
       }
     }
@@ -60,7 +154,6 @@ export async function getPdfPageCount(file) {
       return individualPageMatches.length;
     }
 
-    // Default safe fallback if document is encrypted or dynamically rendered
     return 1;
   } catch (error) {
     console.warn('[Print-Sathi] Could not parse PDF page count automatically:', error);

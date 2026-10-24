@@ -2,11 +2,6 @@
  * ============================================================================
  * PRINT-SATHI DESKTOP CLIENT: Secure Preload Script (preload.js)
  * ============================================================================
- * 
- * Implements Electron security best practices:
- * - contextIsolation: true
- * - nodeIntegration: false
- * Exposes a minimal, type-safe API bridge between renderer and main processes.
  */
 
 const { contextBridge, ipcRenderer } = require('electron');
@@ -21,6 +16,8 @@ contextBridge.exposeInMainWorld('desktopAPI', {
   setPaused: (paused) => ipcRenderer.invoke('set-paused', paused),
   openSpoolFolder: () => ipcRenderer.invoke('open-spool-folder'),
   retryJob: (orderId) => ipcRenderer.invoke('retry-job', orderId),
+  setTargetShop: (shopId) => ipcRenderer.invoke('set-target-shop', shopId),
+  getTargetShop: () => ipcRenderer.invoke('get-target-shop'),
 
   // Real-time Event Subscriptions
   onQueueUpdate: (callback) => {

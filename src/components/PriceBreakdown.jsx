@@ -1,46 +1,56 @@
 /**
  * ============================================================================
- * PRINT-SATHI COMPONENT: Live Price Calculation & Summary Card
+ * PRINT-SATHI COMPONENT: Multi-File & Dynamic Shop Price Breakdown
  * ============================================================================
  * 
- * What this component does in plain language:
- * 1. Computes the live total cost in real-time as users adjust:
- *    - Number of copies
- *    - Color mode (₹1 for B&W vs ₹5 for Color)
- *    - Selected pages (All or Custom Range)
- * 2. Uses the required pricing formula:
- *    Total = (Calculated Pages) × (Number of Copies) × (Rate)
- * 3. Shows a transparent, itemized mathematical breakdown.
- * 4. Provides the primary "Proceed to Payment & Submit" trigger button.
+ * Features:
+ * 1. Computes live multi-file order pricing using the dynamic pricing engine.
+ * 2. Displays itemized per-document calculations and overall sheets needed.
+ * 3. Shows active shop info & counter pickup details.
+ * 4. Transparent breakdown of tiered volume discounts.
+ * 5. Primary "Proceed to Payment & Submit" checkout trigger.
  */
 
 import React from 'react';
+import { calculateOrderPricing, formatCurrency } from '../utils/pricingEngine';
 
 export default function PriceBreakdown({
+  filesList = [],
+  shop = null,
+  // Backwards compatibility props:
   isFileActive,
-  calculatedPages,
-  copies,
-  colorMode,
-  sides,
-  pageRangeMode,
-  customRangeString,
+  calculatedPages = 1,
+  copies = 1,
+  colorMode = 'bw',
+  sides = 'single',
   onProceedToPayment,
 }) {
-  // Determine rate per page based on chosen color mode
-  const ratePerPage = colorMode === 'color' ? 5 : 1;
+  // If multi-file list is provided
+  const hasFiles = Array.isArray(filesList) && filesList.length > 0;
 
-  // Calculate total amount in ₹
-  const totalPagesToPrint = isFileActive ? calculatedPages : 0;
-  const totalAmount = totalPagesToPrint * copies * ratePerPage;
+  // Single-file synthesized fallback
+  const effectiveFilesList = hasFiles
+    ? filesList
+    : isFileActive
+    ? [
+        {
+          name: 'document.pdf',
+          calculatedPages: calculatedPages || 1,
+          totalPages: calculatedPages || 1,
+          copies: copies || 1,
+          colorMode: colorMode || 'bw',
+          sides: sides || 'single',
+        },
+      ]
+    : [];
 
-  // Sheet estimate based on duplex vs single
-  const sheetsNeeded =
-    sides === 'double'
-      ? Math.ceil(totalPagesToPrint / 2) * copies
-      : totalPagesToPrint * copies;
+  const pricingSnapshot = calculateOrderPricing(
+    effectiveFilesList,
+    shop?.pricingTiers || null
+  );
 
-  // Is form valid for checkout?
-  const canProceed = isFileActive && calculatedPages > 0;
+  const isShopActive = shop ? (shop.isAcceptingOrders !== false && (shop.status === 'APPROVED' || !shop.status)) : true;
+  const canProceed = effectiveFilesList.length > 0 && pricingSnapshot.totalAmount > 0 && isShopActive;
 
   return (
     <div className="sticky-column">
@@ -53,70 +63,74 @@ export default function PriceBreakdown({
             </svg>
             Live Cost Breakdown
           </h3>
+          {shop && (
+            <span style={{ fontSize: '0.75rem', color: '#38bdf8', fontWeight: '600' }}>
+              📍 {shop.name}
+            </span>
+          )}
         </div>
 
-        {/* Itemized parameters */}
+        {/* Multi-file Itemized list or single summary */}
         <div className="cost-breakdown-list">
           <div className="breakdown-row">
             <span className="breakdown-label">
-              <span>📄</span> Active Pages:
+              <span>📁</span> Total Documents:
             </span>
             <span className="breakdown-value">
-              {isFileActive
-                ? `${calculatedPages} page${calculatedPages === 1 ? '' : 's'}`
-                : 'No file selected'}
+              {pricingSnapshot.totalFiles} {pricingSnapshot.totalFiles === 1 ? 'file' : 'files'}
             </span>
           </div>
 
           <div className="breakdown-row">
             <span className="breakdown-label">
-              <span>📑</span> Number of Copies:
+              <span>📄</span> Total Impressions:
             </span>
             <span className="breakdown-value">
-              {copies} {copies === 1 ? 'copy' : 'copies'}
+              {pricingSnapshot.totalPages} {pricingSnapshot.totalPages === 1 ? 'page' : 'pages'}
             </span>
           </div>
 
           <div className="breakdown-row">
             <span className="breakdown-label">
-              <span>🎨</span> Print Mode Rate:
+              <span>📦</span> Paper Sheets Needed:
             </span>
             <span className="breakdown-value">
-              {colorMode === 'color' ? '₹5 / page (Color)' : '₹1 / page (B&W)'}
+              ~{pricingSnapshot.totalSheets} sheets
             </span>
           </div>
 
-          <div className="breakdown-row">
-            <span className="breakdown-label">
-              <span>🔄</span> Print Layout:
-            </span>
-            <span className="breakdown-value">
-              {sides === 'double' ? 'Double-Sided' : 'Single-Sided'}
-            </span>
-          </div>
-
-          <div className="breakdown-row">
-            <span className="breakdown-label">
-              <span>📦</span> Estimated Paper Sheets:
-            </span>
-            <span className="breakdown-value">
-              {isFileActive ? `~${sheetsNeeded} sheets` : '0 sheets'}
-            </span>
-          </div>
-        </div>
-
-        {/* Clear Mathematical Formula Display */}
-        <div className="formula-box">
-          <div className="formula-label">Itemized Calculation:</div>
-          <div className="formula-math">
-            <span>{totalPagesToPrint} pgs</span>
-            <span>×</span>
-            <span>{copies} {copies === 1 ? 'copy' : 'copies'}</span>
-            <span>×</span>
-            <span>₹{ratePerPage}</span>
-            <span>=</span>
-            <span style={{ color: 'var(--text-main)' }}>₹{totalAmount}</span>
-          </div>
+          {/* Itemized per-file rows */}
+          {pricingSnapshot.items.length > 0 && (
+            <div style={{
+              margin: '0.5rem 0',
+              padding: '0.5rem 0',
+              borderTop: '1px solid rgba(255, 255, 255, 0.08)',
+              borderBottom: '1px solid rgba(255, 255, 255, 0.08)'
+            }}>
+              <div style={{ fontSize: '0.75rem', fontWeight: '600', color: '#94a3b8', marginBottom: '0.35rem' }}>
+                Per-File Breakdown:
+              </div>
+              {pricingSnapshot.items.map((item, idx) => (
+                <div 
+                  key={item.fileId || idx}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    fontSize: '0.78rem',
+                    padding: '0.2rem 0',
+                    color: '#cbd5e1'
+                  }}
+                >
+                  <span style={{ maxWidth: '170px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={item.fileName}>
+                    {idx + 1}. {item.fileName} ({item.copies}x, {item.colorMode.toUpperCase()})
+                  </span>
+                  <span style={{ fontWeight: '600', color: '#38bdf8' }}>
+                    {formatCurrency(item.itemTotal)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Big Total Due Display */}
@@ -127,7 +141,7 @@ export default function PriceBreakdown({
               Subsidized Campus Student Rate
             </div>
           </div>
-          <div className="total-price">₹{totalAmount}</div>
+          <div className="total-price">{formatCurrency(pricingSnapshot.totalAmount)}</div>
         </div>
 
         {/* Proceed to Payment CTA */}
@@ -135,28 +149,28 @@ export default function PriceBreakdown({
           type="button"
           className="submit-order-btn"
           disabled={!canProceed}
-          onClick={() => onProceedToPayment(totalAmount, ratePerPage)}
+          onClick={() => onProceedToPayment(pricingSnapshot.totalAmount, pricingSnapshot)}
         >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
             <rect x="1" y="4" width="22" height="16" rx="2" ry="2" />
             <line x1="1" y1="10" x2="23" y2="10" />
           </svg>
-          Proceed to Payment & Submit
+          {!isShopActive ? 'Counter Paused / Inactive' : 'Proceed to Payment & Submit'}
         </button>
 
-        {!isFileActive && (
+        {!isShopActive && (
           <p style={{ textAlign: 'center', fontSize: '0.78rem', color: 'var(--danger)', marginTop: '0.65rem' }}>
-            * Please upload a valid .pdf file to continue
+            * This counter is currently not accepting new print jobs. Please select another counter from the directory.
           </p>
         )}
 
-        {isFileActive && calculatedPages === 0 && (
+        {isShopActive && !hasFiles && !isFileActive && (
           <p style={{ textAlign: 'center', fontSize: '0.78rem', color: 'var(--danger)', marginTop: '0.65rem' }}>
-            * Please enter a valid page range to calculate cost
+            * Please upload at least one .pdf file to continue
           </p>
         )}
 
-        {/* Campus Xerox Info Card */}
+        {/* Campus Pickup Info Card */}
         <div className="campus-info-card">
           <div className="info-icon">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -166,7 +180,11 @@ export default function PriceBreakdown({
           <div>
             <div className="info-text-title">Queue & Pickup Guarantee</div>
             <p className="info-text-desc">
-              Your document is assigned a unique 4-digit token. Pick up your prints at Counter 1 (Main Student Plaza) without waiting in line!
+              {shop?.location ? (
+                <>Pick up at <strong>{shop.name}</strong> ({shop.location.building}, {shop.location.floor}) with your 4-digit token!</>
+              ) : (
+                'Your document is assigned a unique 4-digit token. Pick up your prints at Counter 1 without waiting in line!'
+              )}
             </p>
           </div>
         </div>

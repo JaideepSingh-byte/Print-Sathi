@@ -18,13 +18,14 @@ const processor = new OrderProcessor(instanceId);
 
 let mainWindow = null;
 let queueUnsubscribe = null;
+let currentTargetShopId = process.env.PRINT_SATHI_SHOP_ID || 'shop_main_xerox';
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1100,
-    height: 780,
-    minWidth: 900,
-    minHeight: 650,
+    width: 1140,
+    height: 800,
+    minWidth: 920,
+    minHeight: 680,
     title: 'Print-Sathi | Unattended Station Printing Console',
     backgroundColor: '#0f172a',
     webPreferences: {
@@ -42,6 +43,28 @@ function createWindow() {
   });
 }
 
+function startQueueSubscription() {
+  if (typeof queueUnsubscribe === 'function') {
+    queueUnsubscribe();
+  }
+
+  queueUnsubscribe = firebaseService.subscribeToEligibleQueue(
+    currentTargetShopId,
+    (queue, allDocs) => {
+      processor.handleIncomingQueue(queue, allDocs);
+    },
+    (err) => {
+      processor.log('error', `Firestore subscription error: ${err.message}`);
+    },
+    (rawDocs) => {
+      processor.log(
+        'info',
+        `📡 Firestore Diagnostics: ${rawDocs.length} total orders found (Station Counter: "${currentTargetShopId}").`
+      );
+    }
+  );
+}
+
 // IPC Handlers
 ipcMain.handle('get-printers', async () => {
   return await printerService.getAvailablePrinters();
@@ -54,6 +77,7 @@ ipcMain.handle('get-status', () => {
     dryRun: processor.dryRun,
     isPaused: processor.isPaused,
     selectedPrinter: processor.selectedPrinter,
+    targetShopId: currentTargetShopId,
     isProcessing: processor.isProcessing,
     activeJob: processor.activeJob,
     isConfigured: firebaseService.isConfigured,
@@ -80,6 +104,17 @@ ipcMain.handle('set-paused', (_event, paused) => {
   return true;
 });
 
+ipcMain.handle('set-target-shop', (_event, shopId) => {
+  currentTargetShopId = shopId;
+  processor.setTargetShopId(shopId);
+  startQueueSubscription();
+  return true;
+});
+
+ipcMain.handle('get-target-shop', () => {
+  return currentTargetShopId;
+});
+
 ipcMain.handle('open-spool-folder', async () => {
   await shell.openPath(processor.spoolDir);
   return true;
@@ -87,7 +122,6 @@ ipcMain.handle('open-spool-folder', async () => {
 
 ipcMain.handle('retry-job', async (_event, orderId) => {
   processor.log('info', `Manually retrying Order #${orderId}...`);
-  // Will be picked up on next queue cycle
   return true;
 });
 
@@ -113,21 +147,11 @@ app.whenReady().then(async () => {
     }
   });
 
-  // Initialize processor (recovers stale jobs and discovers printers)
+  // Initialize processor
   await processor.init();
 
-  // Subscribe to live Firestore queue with diagnostics
-  queueUnsubscribe = firebaseService.subscribeToEligibleQueue(
-    (queue, allDocs) => {
-      processor.handleIncomingQueue(queue, allDocs);
-    },
-    (err) => {
-      processor.log('error', `Firestore subscription error: ${err.message}`);
-    },
-    (rawDocs) => {
-      processor.log('info', `📡 Firestore Diagnostics: ${rawDocs.length} total docs found in 'print_jobs'.`);
-    }
-  );
+  // Subscribe to live queue
+  startQueueSubscription();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

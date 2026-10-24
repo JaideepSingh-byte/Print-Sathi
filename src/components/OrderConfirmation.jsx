@@ -1,20 +1,36 @@
 /**
  * ============================================================================
- * PRINT-SATHI COMPONENT: Order Confirmation & Counter Pickup Pass
+ * PRINT-SATHI COMPONENT: Multi-File Order Confirmation & Pickup Pass
  * ============================================================================
  * 
- * What this component does in plain language:
- * 1. Serves as the official pickup token ticket once payment is simulated.
- * 2. Displays the student's 4-digit Token ID (#PS-XXXX) in large, high-contrast typography.
- * 3. Shows cloud confirmation for Cloud Firestore and Storage.
- * 4. Shows an itemized summary of the print job.
- * 5. Provides a "Queue Another Document" button to reset the form.
+ * Capabilities:
+ * 1. Official token pickup slip with high-contrast Token ID (#PS-XXXX).
+ * 2. Displays target shop name and exact counter pickup location.
+ * 3. Shows itemized breakdown for all documents in the order.
+ * 4. Shows Cloud Firestore / Local synchronization status.
  */
 
 import React from 'react';
+import { formatCurrency } from '../utils/pricingEngine';
 
 export default function OrderConfirmation({ order, onReset }) {
   if (!order) return null;
+
+  const files = Array.isArray(order.files) && order.files.length > 0
+    ? order.files
+    : [
+        {
+          fileName: order.fileName || 'document.pdf',
+          fileUrl: order.fileUrl || '',
+          calculatedPages: order.calculatedPages || 1,
+          copies: order.copies || 1,
+          colorMode: order.colorMode || 'bw',
+          sides: order.sides || 'single',
+          itemTotal: order.totalAmount || 0,
+        },
+      ];
+
+  const pickupLocation = order.pickupCounter || 'Counter 1 (Main Xerox Center, Student Plaza)';
 
   return (
     <div className="confirmation-container">
@@ -34,27 +50,6 @@ export default function OrderConfirmation({ order, onReset }) {
           </p>
         </div>
 
-        {/* Free Plan / Cloud Storage Info Note */}
-        {!order.storageUploaded && (
-          <div style={{
-            margin: '1.25rem 2rem 0',
-            padding: '0.9rem 1.1rem',
-            background: '#f0fdf4',
-            border: '1.5px solid #bbf7d0',
-            borderRadius: '12px',
-            fontSize: '0.84rem',
-            color: '#166534',
-            lineHeight: 1.5
-          }}>
-            <strong style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.2rem' }}>
-              <span>✅</span> Cloud Firestore Active (100% Free Spark Plan)
-            </strong>
-            <div>
-              Your order metadata, token, and prices are sent live to your Google Cloud Firestore database. You do <strong>not</strong> need to pay or upgrade to the Blaze plan to use Firestore!
-            </div>
-          </div>
-        )}
-
         {/* The Big 4-Digit Token Hero Box */}
         <div className="token-hero-box">
           <div className="token-hero-label">Your Counter Pickup Token</div>
@@ -62,60 +57,77 @@ export default function OrderConfirmation({ order, onReset }) {
           <p className="token-hero-instruction">
             Show this 4-digit token <strong>({order.token})</strong> at{' '}
             <span style={{ color: 'var(--primary)', textDecoration: 'underline' }}>
-              Counter 1 (Main Student Plaza)
+              {pickupLocation}
             </span>{' '}
             to collect your fresh prints.
           </p>
         </div>
 
-        {/* Itemized Slip Summary */}
-        <div className="slip-details-grid">
-          <div className="slip-item">
-            <div className="slip-item-label">Document Name</div>
-            <div className="slip-item-val" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              📄 {order.fileName}
-            </div>
-            {order.fileUrl && (
-              <a
-                href={order.fileUrl}
-                target="_blank"
-                rel="noreferrer"
-                style={{ fontSize: '0.74rem', color: 'var(--primary)', textDecoration: 'none', fontWeight: 600, display: 'inline-block', marginTop: '0.2rem' }}
+        {/* Multi-Document Itemized Slip List */}
+        <div style={{ margin: '1.25rem 2rem 0', textAlign: 'left' }}>
+          <h4 style={{ fontSize: '0.85rem', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>
+            Documents in this Order ({files.length}):
+          </h4>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+            {files.map((file, idx) => (
+              <div
+                key={file.fileId || idx}
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  padding: '0.65rem 0.9rem',
+                  background: 'rgba(30, 41, 59, 0.4)',
+                  borderRadius: '8px',
+                  border: '1px solid rgba(255, 255, 255, 0.06)',
+                  fontSize: '0.82rem'
+                }}
               >
-                ↗ View PDF Document
-              </a>
-            )}
+                <div>
+                  <div style={{ fontWeight: '600', color: '#f8fafc' }}>
+                    📄 {idx + 1}. {file.fileName}
+                  </div>
+                  <div style={{ fontSize: '0.74rem', color: '#94a3b8', marginTop: '0.15rem' }}>
+                    {file.calculatedPages || 1} pgs &bull; {file.copies} {file.copies === 1 ? 'copy' : 'copies'} &bull;{' '}
+                    {file.colorMode === 'color' ? '🎨 Color' : '⬛ B&W'} &bull;{' '}
+                    {file.sides === 'double' ? 'Duplex' : 'Single'}
+                  </div>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <span style={{ fontWeight: '600', color: '#38bdf8' }}>
+                    {formatCurrency(file.itemTotal || 0)}
+                  </span>
+                  {file.fileUrl && (
+                    <div>
+                      <a
+                        href={file.fileUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{ fontSize: '0.7rem', color: '#60a5fa', textDecoration: 'none' }}
+                      >
+                        ↗ View PDF
+                      </a>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
           </div>
+        </div>
 
+        {/* Slip Summary Grid */}
+        <div className="slip-details-grid" style={{ marginTop: '1.25rem' }}>
           <div className="slip-item">
-            <div className="slip-item-label">Pages Printed</div>
-            <div className="slip-item-val">
-              {order.calculatedPages} page{order.calculatedPages === 1 ? '' : 's'}{' '}
-              <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                ({order.pageRangeMode === 'all' ? 'All' : order.pageRangeString})
-              </span>
-            </div>
-          </div>
-
-          <div className="slip-item">
-            <div className="slip-item-label">Copies & Mode</div>
-            <div className="slip-item-val">
-              {order.copies} {order.copies === 1 ? 'copy' : 'copies'} •{' '}
-              {order.colorMode === 'color' ? '🎨 Color' : '⬛ B&W'}
-            </div>
-          </div>
-
-          <div className="slip-item">
-            <div className="slip-item-label">Paper Layout</div>
-            <div className="slip-item-val">
-              {order.sides === 'double' ? 'Double-Sided (Duplex)' : 'Single-Sided'}
+            <div className="slip-item-label">Pickup Location</div>
+            <div className="slip-item-val" style={{ fontSize: '0.85rem' }}>
+              📍 {pickupLocation}
             </div>
           </div>
 
           <div className="slip-item">
             <div className="slip-item-label">Total Amount Paid</div>
             <div className="slip-item-val" style={{ color: 'var(--success)' }}>
-              ₹{order.totalAmount} (via UPI)
+              {formatCurrency(order.totalAmount || 0)} (via UPI)
             </div>
           </div>
 
@@ -131,6 +143,13 @@ export default function OrderConfirmation({ order, onReset }) {
                   <span className="status-dot"></span> In Local Spooler
                 </span>
               )}
+            </div>
+          </div>
+
+          <div className="slip-item">
+            <div className="slip-item-label">Order Created</div>
+            <div className="slip-item-val" style={{ fontSize: '0.82rem' }}>
+              {new Date(order.createdAt || Date.now()).toLocaleTimeString()}
             </div>
           </div>
         </div>
@@ -156,7 +175,7 @@ export default function OrderConfirmation({ order, onReset }) {
             <span style={{ width: '2px' }}></span>
           </div>
           <div style={{ fontSize: '0.75rem', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>
-            TOKEN: #{order.orderId} • {order.firestoreSaved ? 'FIRESTORE_SYNCED' : 'LOCAL_CACHED'}
+            TOKEN: #{order.orderId} &bull; {order.firestoreSaved ? 'FIRESTORE_SYNCED' : 'LOCAL_CACHED'}
           </div>
         </div>
       </div>
