@@ -268,3 +268,126 @@ export function parsePageRange(rangeString, maxPages = 1) {
     pages: sortedPages,
   };
 }
+
+/**
+ * Validates and calculates page selection for an individual file.
+ * Supports 'all' pages mode or 'custom' range with fromPage and toPage.
+ * 
+ * @param {'all' | 'custom'} mode 
+ * @param {number|string} fromPage 
+ * @param {number|string} toPage 
+ * @param {number} totalPages 
+ * @returns {{
+ *   isValid: boolean,
+ *   error: string | null,
+ *   calculatedPages: number,
+ *   fromPage: number,
+ *   toPage: number,
+ *   pageRangeString: string,
+ *   pageSelection: { mode: string, fromPage: number, toPage: number }
+ * }}
+ */
+export function evaluatePageSelection(mode, fromPage, toPage, totalPages = 1) {
+  const safeTotal = Math.max(1, parseInt(totalPages, 10) || 1);
+
+  if (mode !== 'custom') {
+    return {
+      isValid: true,
+      error: null,
+      calculatedPages: safeTotal,
+      fromPage: 1,
+      toPage: safeTotal,
+      pageRangeString: `All (${safeTotal} pgs)`,
+      pageSelection: {
+        mode: 'all',
+        fromPage: 1,
+        toPage: safeTotal,
+      },
+    };
+  }
+
+  // Custom mode validation
+  const parsedFrom = parseInt(fromPage, 10);
+  const parsedTo = parseInt(toPage, 10);
+
+  if (isNaN(parsedFrom) || isNaN(parsedTo)) {
+    return {
+      isValid: false,
+      error: 'Please enter valid integer page numbers.',
+      calculatedPages: 0,
+      fromPage: isNaN(parsedFrom) ? 1 : parsedFrom,
+      toPage: isNaN(parsedTo) ? safeTotal : parsedTo,
+      pageRangeString: 'Invalid range',
+      pageSelection: {
+        mode: 'custom',
+        fromPage: isNaN(parsedFrom) ? 1 : parsedFrom,
+        toPage: isNaN(parsedTo) ? safeTotal : parsedTo,
+      },
+    };
+  }
+
+  if (parsedFrom < 1) {
+    return {
+      isValid: false,
+      error: 'Starting page must be at least 1.',
+      calculatedPages: 0,
+      fromPage: parsedFrom,
+      toPage: parsedTo,
+      pageRangeString: 'Invalid range',
+      pageSelection: { mode: 'custom', fromPage: parsedFrom, toPage: parsedTo },
+    };
+  }
+
+  if (parsedTo < parsedFrom) {
+    return {
+      isValid: false,
+      error: `Ending page (${parsedTo}) cannot be less than starting page (${parsedFrom}).`,
+      calculatedPages: 0,
+      fromPage: parsedFrom,
+      toPage: parsedTo,
+      pageRangeString: 'Invalid range',
+      pageSelection: { mode: 'custom', fromPage: parsedFrom, toPage: parsedTo },
+    };
+  }
+
+  if (safeTotal > 0 && parsedFrom > safeTotal) {
+    return {
+      isValid: false,
+      error: `Starting page (${parsedFrom}) exceeds document total of ${safeTotal} pages.`,
+      calculatedPages: 0,
+      fromPage: parsedFrom,
+      toPage: parsedTo,
+      pageRangeString: 'Invalid range',
+      pageSelection: { mode: 'custom', fromPage: parsedFrom, toPage: parsedTo },
+    };
+  }
+
+  if (safeTotal > 0 && parsedTo > safeTotal) {
+    return {
+      isValid: false,
+      error: `Ending page (${parsedTo}) exceeds document total of ${safeTotal} pages.`,
+      calculatedPages: 0,
+      fromPage: parsedFrom,
+      toPage: parsedTo,
+      pageRangeString: 'Invalid range',
+      pageSelection: { mode: 'custom', fromPage: parsedFrom, toPage: parsedTo },
+    };
+  }
+
+  const calculatedPages = parsedTo - parsedFrom + 1;
+  const pageRangeString = `Pages ${parsedFrom}–${parsedTo} (${calculatedPages} pgs)`;
+
+  return {
+    isValid: true,
+    error: null,
+    calculatedPages,
+    fromPage: parsedFrom,
+    toPage: parsedTo,
+    pageRangeString,
+    pageSelection: {
+      mode: 'custom',
+      fromPage: parsedFrom,
+      toPage: parsedTo,
+    },
+  };
+}

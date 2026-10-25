@@ -222,22 +222,39 @@ export function normalizeOrder(docData) {
       shopId,
       status,
       paymentStatus,
-      files: docData.files.map((f, index) => ({
-        fileId: f.fileId || `file_${index}`,
-        fileName: f.fileName || f.name || 'document.pdf',
-        fileUrl: f.fileUrl || '',
-        fileSize: f.fileSize || f.size || 0,
-        totalPages: f.totalPages || 1,
-        calculatedPages: f.calculatedPages || 1,
-        pageRangeMode: f.pageRangeMode || 'all',
-        pageRangeString: f.pageRangeString || `All (${f.totalPages || 1} pgs)`,
-        copies: f.copies || 1,
-        colorMode: f.colorMode || 'bw',
-        sides: f.sides || 'single',
-        ratePerPage: f.ratePerPage || 1,
-        itemTotal: f.itemTotal || 0,
-        ...f,
-      })),
+      files: docData.files.map((f, index) => {
+        const totalPgs = f.totalPages || 1;
+        const mode = f.pageSelection?.mode || f.pageRangeMode || 'all';
+        const fromPg = f.pageSelection?.fromPage ?? f.fromPage ?? 1;
+        const toPg = f.pageSelection?.toPage ?? f.toPage ?? totalPgs;
+        const calcPgs = f.calculatedPages || (mode === 'custom' ? Math.max(1, toPg - fromPg + 1) : totalPgs);
+        const rangeStr = f.pageRangeString || (mode === 'custom' ? `Pages ${fromPg}–${toPg} (${calcPgs} pgs)` : `All (${totalPgs} pgs)`);
+
+        return {
+          fileId: f.fileId || f.id || `file_${index}`,
+          fileName: f.fileName || f.name || 'document.pdf',
+          fileUrl: f.fileUrl || '',
+          fileSize: f.fileSize || f.size || 0,
+          totalPages: totalPgs,
+          calculatedPages: calcPgs,
+          pageSelection: {
+            mode,
+            fromPage: fromPg,
+            toPage: toPg,
+          },
+          pageRangeMode: mode,
+          fromPage: fromPg,
+          toPage: toPg,
+          pageRangeString: rangeStr,
+          copies: f.copies || 1,
+          colorMode: f.colorMode || 'bw',
+          colourMode: f.colourMode || (f.colorMode === 'color' ? 'color' : 'grayscale'),
+          sides: f.sides || 'single',
+          ratePerPage: f.ratePerPage || 1,
+          itemTotal: f.itemTotal || 0,
+          ...f,
+        };
+      }),
       pricingSnapshot: docData.pricingSnapshot || {
         totalAmount: docData.totalAmount || 0,
         subtotal: docData.totalAmount || 0,
@@ -248,17 +265,32 @@ export function normalizeOrder(docData) {
   }
 
   // Legacy single-file synthesis
+  const totalPgs = docData.totalPages || 1;
+  const mode = docData.pageSelection?.mode || docData.pageRangeMode || 'all';
+  const fromPg = docData.pageSelection?.fromPage ?? docData.fromPage ?? 1;
+  const toPg = docData.pageSelection?.toPage ?? docData.toPage ?? totalPgs;
+  const calcPgs = docData.calculatedPages || docData.totalPages || (mode === 'custom' ? Math.max(1, toPg - fromPg + 1) : totalPgs);
+  const rangeStr = docData.pageRangeString || (mode === 'custom' ? `Pages ${fromPg}–${toPg} (${calcPgs} pgs)` : `All (${totalPgs} pgs)`);
+
   const singleFile = {
     fileId: 'file_0',
     fileName: docData.fileName || 'document.pdf',
     fileUrl: docData.fileUrl || '',
     fileSize: docData.fileSize || 0,
-    totalPages: docData.totalPages || 1,
-    calculatedPages: docData.calculatedPages || docData.totalPages || 1,
-    pageRangeMode: docData.pageRangeMode || 'all',
-    pageRangeString: docData.pageRangeString || `All (${docData.totalPages || 1} pgs)`,
+    totalPages: totalPgs,
+    calculatedPages: calcPgs,
+    pageSelection: {
+      mode,
+      fromPage: fromPg,
+      toPage: toPg,
+    },
+    pageRangeMode: mode,
+    fromPage: fromPg,
+    toPage: toPg,
+    pageRangeString: rangeStr,
     copies: docData.copies || 1,
     colorMode: docData.colorMode || 'bw',
+    colourMode: docData.colourMode || (docData.colorMode === 'color' ? 'color' : 'grayscale'),
     sides: docData.sides || 'single',
     ratePerPage: docData.ratePerPage || 1,
     itemTotal: docData.totalAmount || 0,
@@ -767,18 +799,33 @@ export async function submitMultiFileOrder(orderConfig, filesList, onProgress) {
     console.log(`✨ [File ${i + 1} Ready] Method: ${uploadMethod} | Total file prep time: ${fileTotalElapsed} ms`);
 
     const itemPricing = pricingSnapshot.items[i] || {};
+    const totalPgs = item.totalPages || 1;
+    const mode = item.pageSelection?.mode || item.pageRangeMode || 'all';
+    const fromPg = item.pageSelection?.fromPage ?? item.fromPage ?? 1;
+    const toPg = item.pageSelection?.toPage ?? item.toPage ?? totalPgs;
+    const calcPgs = item.calculatedPages || (mode === 'custom' ? Math.max(1, toPg - fromPg + 1) : totalPgs);
+    const rangeStr = item.pageRangeString || (mode === 'custom' ? `Pages ${fromPg}–${toPg} (${calcPgs} pgs)` : `All (${totalPgs} pgs)`);
+
     processedFiles.push({
-      fileId: `file_${i + 1}_${Date.now()}`,
+      fileId: item.id || `file_${i + 1}_${Date.now()}`,
       fileName: fileName,
       fileSize: fileSize,
       fileUrl,
       previewUrl: fileObj && typeof URL !== 'undefined' ? URL.createObjectURL(fileObj) : '',
-      totalPages: item.totalPages || 1,
-      calculatedPages: item.calculatedPages || 1,
-      pageRangeMode: item.pageRangeMode || 'all',
-      pageRangeString: item.pageRangeString || `All (${item.totalPages || 1} pgs)`,
+      totalPages: totalPgs,
+      calculatedPages: calcPgs,
+      pageSelection: {
+        mode,
+        fromPage: fromPg,
+        toPage: toPg,
+      },
+      pageRangeMode: mode,
+      fromPage: fromPg,
+      toPage: toPg,
+      pageRangeString: rangeStr,
       copies: item.copies || 1,
       colorMode: item.colorMode || 'bw',
+      colourMode: item.colourMode || (item.colorMode === 'color' ? 'color' : 'grayscale'),
       sides: item.sides || 'single',
       ratePerPage: itemPricing.ratePerPage || (item.colorMode === 'color' ? 8 : 2),
       itemTotal: itemPricing.itemTotal || 0,

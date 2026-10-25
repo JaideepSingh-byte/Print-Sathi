@@ -239,9 +239,14 @@ class OrderProcessor {
         const tempPdfPath = await this.downloadDocument(orderId, `${i}_${file.fileName}`, file.fileUrl);
         this.validateDocumentAndSpecs(tempPdfPath, file);
 
+        const rangeDesc = file.pageRangeString || 
+          (file.pageRangeMode === 'custom' 
+            ? `Pages ${file.fromPage || file.pageSelection?.fromPage}-${file.toPage || file.pageSelection?.toPage}` 
+            : `All (${file.totalPages || file.calculatedPages || 1} pgs)`);
+
         this.log(
           'info',
-          `[${i + 1}/${files.length}] Spooling "${file.fileName}" (${file.copies} copies, ${file.colorMode.toUpperCase()}, ${file.sides})...`
+          `[${i + 1}/${files.length}] Spooling "${file.fileName}" (${file.copies} copies, ${file.colorMode.toUpperCase()}, ${file.sides}, ${rangeDesc})...`
         );
 
         await printerService.printPdf(tempPdfPath, file, {

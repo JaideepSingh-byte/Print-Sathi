@@ -78,16 +78,32 @@ export default function UploadZone({
       }, shopPricing);
 
       const fileItem = {
-        id: `file_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        id: `file_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
         rawFile: file,
+        file: file,
         name: file.name,
+        fileName: file.name,
+        fileType: 'PDF',
         size: file.size,
+        fileSize: file.size,
         totalPages: detectedPages,
         calculatedPages: detectedPages,
+        pageSelection: {
+          mode: 'all',
+          fromPage: 1,
+          toPage: detectedPages,
+        },
         pageRangeMode: 'all',
+        fromPage: 1,
+        toPage: detectedPages,
         pageRangeString: `All (${detectedPages} pgs)`,
+        rangeValidation: {
+          isValid: true,
+          error: null,
+        },
         copies: 1,
         colorMode: 'bw',
+        colourMode: 'grayscale',
         sides: 'single',
         ratePerPage: initialPrice.ratePerPage,
         itemTotal: initialPrice.itemTotal,

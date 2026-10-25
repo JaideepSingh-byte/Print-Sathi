@@ -105,10 +105,30 @@ export function getTierRate(colorMode = 'bw', sides = 'single', unitCount = 1, c
  * @param {object} shopPricing 
  */
 export function calculateFilePrice(fileSpec, shopPricing = null) {
-  const calculatedPages = Math.max(1, parseInt(fileSpec.calculatedPages || 1, 10));
-  const copies = Math.max(1, parseInt(fileSpec.copies || 1, 10));
-  const colorMode = fileSpec.colorMode === 'color' ? 'color' : 'bw';
-  const sides = fileSpec.sides === 'double' ? 'double' : 'single';
+  const isInvalid = fileSpec?.rangeValidation && fileSpec.rangeValidation.isValid === false;
+  const rawPages = parseInt(fileSpec?.calculatedPages, 10);
+  const calculatedPages = isInvalid || isNaN(rawPages) || rawPages <= 0 ? 0 : rawPages;
+
+  const copies = Math.max(1, parseInt(fileSpec?.copies || 1, 10));
+  const colorMode = fileSpec?.colorMode === 'color' ? 'color' : 'bw';
+  const sides = fileSpec?.sides === 'double' ? 'double' : 'single';
+
+  if (calculatedPages === 0) {
+    return {
+      calculatedPages: 0,
+      copies,
+      colorMode,
+      sides,
+      sheetsPerCopy: 0,
+      totalSheets: 0,
+      totalImpressions: 0,
+      billingUnits: 0,
+      unitType: sides === 'double' ? 'sheets' : 'pages',
+      ratePerUnit: 0,
+      ratePerPage: 0,
+      itemTotal: 0,
+    };
+  }
 
   // For double sided, 1 sheet contains 2 page impressions
   const sheetsPerCopy = sides === 'double' ? Math.ceil(calculatedPages / 2) : calculatedPages;
@@ -161,9 +181,17 @@ export function calculateOrderPricing(filesList = [], shopPricing = null) {
       fileName: file.name || file.fileName || 'document.pdf',
       fileSize: file.size || file.fileSize || 0,
       fileUrl: file.fileUrl || '',
+      pageSelection: file.pageSelection || {
+        mode: file.pageRangeMode || 'all',
+        fromPage: file.fromPage || 1,
+        toPage: file.toPage || (file.totalPages || 1),
+      },
       pageRangeMode: file.pageRangeMode || 'all',
+      fromPage: file.fromPage || 1,
+      toPage: file.toPage || (file.totalPages || 1),
       pageRangeString: file.pageRangeString || `All (${file.totalPages || 1} pgs)`,
       totalPages: file.totalPages || 1,
+      rangeValidation: file.rangeValidation || { isValid: true, error: null },
       ...pricing,
     };
   });

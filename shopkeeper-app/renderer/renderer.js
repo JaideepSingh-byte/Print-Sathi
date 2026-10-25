@@ -652,8 +652,21 @@ function renderQueueTable(jobs) {
     const isCompleted = job.status === 'COMPLETED' || job.status === 'PRINTED';
 
     let filesSummary = job.fileName || 'document.pdf';
-    if (Array.isArray(job.files) && job.files.length > 1) {
-      filesSummary = `${job.files.length} PDFs (${job.files.map((f) => f.fileName).join(', ')})`;
+    let filesTooltip = filesSummary;
+    if (Array.isArray(job.files) && job.files.length > 0) {
+      if (job.files.length === 1) {
+        const singleF = job.files[0];
+        filesSummary = `${singleF.fileName} [${singleF.pageRangeString || 'All'}]`;
+        filesTooltip = `${singleF.fileName} (${singleF.pageRangeString || 'All'}, ${singleF.copies || 1}x, ${singleF.colorMode === 'color' ? 'Color' : 'B&W'}, ${singleF.sides === 'double' ? 'Duplex' : 'Single'})`;
+      } else {
+        filesSummary = `${job.files.length} PDFs: ${job.files.map((f) => `${f.fileName} [${f.pageRangeString || 'All'}]`).join(', ')}`;
+        filesTooltip = job.files
+          .map(
+            (f, i) =>
+              `${i + 1}. ${f.fileName} (${f.pageRangeString || 'All'}, ${f.copies || 1}x, ${f.colorMode === 'color' ? 'Color' : 'B&W'}, ${f.sides === 'double' ? 'Duplex' : 'Single'})`
+          )
+          .join('\n');
+      }
     }
 
     const modeSummary = `${job.copies || 1}x • ${job.colorMode === 'color' ? '🎨 Color' : 'B&W'} • ${job.sides === 'double' ? 'Duplex' : '1-side'}`;
@@ -662,7 +675,7 @@ function renderQueueTable(jobs) {
 
     tr.innerHTML = `
       <td class="token-cell">${escapeHtml(token)}</td>
-      <td title="${escapeHtml(filesSummary)}" style="max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+      <td title="${escapeHtml(filesTooltip)}" style="max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
         📄 ${escapeHtml(filesSummary)}
       </td>
       <td>${escapeHtml(modeSummary)}</td>

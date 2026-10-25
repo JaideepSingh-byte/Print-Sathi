@@ -99,7 +99,7 @@ export default function OrderConfirmation({ order, onReset }) {
                   justifyContent: 'space-between',
                   alignItems: 'center',
                   padding: '0.65rem 0.9rem',
-                  background: 'rgba(30, 41, 59, 0.4)',
+                  background: 'rgba(154, 174, 207, 0.4)',
                   borderRadius: '8px',
                   border: '1px solid rgba(255, 255, 255, 0.06)',
                   fontSize: '0.82rem',
@@ -111,7 +111,7 @@ export default function OrderConfirmation({ order, onReset }) {
                     📄 {idx + 1}. {file.fileName}
                   </div>
                   <div style={{ fontSize: '0.74rem', color: '#94a3b8', marginTop: '0.15rem' }}>
-                    {file.calculatedPages || 1} pgs &bull; {file.copies} {file.copies === 1 ? 'copy' : 'copies'} &bull;{' '}
+                    {file.pageRangeString ? `📑 ${file.pageRangeString}` : `📑 ${file.calculatedPages || 1} pgs`} &bull; {file.copies} {file.copies === 1 ? 'copy' : 'copies'} &bull;{' '}
                     {file.colorMode === 'color' ? '🎨 Color' : '⬛ B&W'} &bull;{' '}
                     {file.sides === 'double' ? 'Duplex' : 'Single'}
                   </div>

@@ -51,7 +51,10 @@ export default function PriceBreakdown({
   );
 
   const isShopActive = shop ? (shop.isAcceptingOrders !== false && (shop.status === 'APPROVED' || !shop.status)) : true;
-  const canProceed = effectiveFilesList.length > 0 && pricingSnapshot.totalAmount > 0 && isShopActive;
+  const hasInvalidRanges = effectiveFilesList.some(
+    (f) => f.rangeValidation && f.rangeValidation.isValid === false
+  );
+  const canProceed = effectiveFilesList.length > 0 && pricingSnapshot.totalAmount > 0 && isShopActive && !hasInvalidRanges;
 
   return (
     <div className="sticky-column">
@@ -123,10 +126,10 @@ export default function PriceBreakdown({
                   }}
                 >
                   <span style={{ flex: '1 1 auto', minWidth: 0, marginRight: '0.5rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={item.fileName}>
-                    {idx + 1}. {item.fileName} ({item.copies}x, {item.colorMode.toUpperCase()})
+                    {idx + 1}. {item.fileName} ({item.pageRangeString || `${item.calculatedPages} pgs`}, {item.copies}x, {item.colorMode.toUpperCase()})
                   </span>
-                  <span style={{ fontWeight: '600', color: '#38bdf8', flexShrink: 0 }}>
-                    {formatCurrency(item.itemTotal)}
+                  <span style={{ fontWeight: '600', color: item.calculatedPages > 0 ? '#38bdf8' : '#ef4444', flexShrink: 0 }}>
+                    {item.calculatedPages > 0 ? formatCurrency(item.itemTotal) : 'Invalid'}
                   </span>
                 </div>
               ))}
@@ -158,6 +161,12 @@ export default function PriceBreakdown({
           </svg>
           {!isShopActive ? 'Counter Paused / Inactive' : 'Proceed to Payment & Submit'}
         </button>
+
+        {isShopActive && hasInvalidRanges && (
+          <p style={{ textAlign: 'center', fontSize: '0.78rem', color: 'var(--danger)', marginTop: '0.65rem' }}>
+            * Please resolve invalid page ranges on your uploaded files before proceeding
+          </p>
+        )}
 
         {!isShopActive && (
           <p style={{ textAlign: 'center', fontSize: '0.78rem', color: 'var(--danger)', marginTop: '0.65rem' }}>

@@ -151,36 +151,68 @@ function normalizeDesktopOrder(docData) {
 
   let files = [];
   if (Array.isArray(docData.files) && docData.files.length > 0) {
-    files = docData.files.map((f, i) => ({
-      fileId: f.fileId || `file_${i}`,
-      fileName: f.fileName || f.name || 'document.pdf',
-      fileUrl: f.fileUrl || '',
-      fileSize: f.fileSize || f.size || 0,
-      totalPages: f.totalPages || 1,
-      calculatedPages: f.calculatedPages || 1,
-      copies: f.copies || 1,
-      colorMode: f.colorMode || 'bw',
-      sides: f.sides || 'single',
-      pageRangeMode: f.pageRangeMode || 'all',
-      pageRangeString: f.pageRangeString || `All (${f.totalPages || 1} pgs)`,
-      ratePerPage: f.ratePerPage || 2,
-      itemTotal: f.itemTotal || 0,
-    }));
+    files = docData.files.map((f, i) => {
+      const totalPgs = f.totalPages || 1;
+      const mode = f.pageSelection?.mode || f.pageRangeMode || 'all';
+      const fromPg = f.pageSelection?.fromPage ?? f.fromPage ?? 1;
+      const toPg = f.pageSelection?.toPage ?? f.toPage ?? totalPgs;
+      const calcPgs = f.calculatedPages || (mode === 'custom' ? Math.max(1, toPg - fromPg + 1) : totalPgs);
+      const rangeStr = f.pageRangeString || (mode === 'custom' ? `Pages ${fromPg}–${toPg} (${calcPgs} pgs)` : `All (${totalPgs} pgs)`);
+
+      return {
+        fileId: f.fileId || f.id || `file_${i}`,
+        fileName: f.fileName || f.name || 'document.pdf',
+        fileUrl: f.fileUrl || '',
+        fileSize: f.fileSize || f.size || 0,
+        totalPages: totalPgs,
+        calculatedPages: calcPgs,
+        pageSelection: {
+          mode,
+          fromPage: fromPg,
+          toPage: toPg,
+        },
+        pageRangeMode: mode,
+        fromPage: fromPg,
+        toPage: toPg,
+        pageRangeString: rangeStr,
+        copies: f.copies || 1,
+        colorMode: f.colorMode || 'bw',
+        colourMode: f.colourMode || (f.colorMode === 'color' ? 'color' : 'grayscale'),
+        sides: f.sides || 'single',
+        ratePerPage: f.ratePerPage || 2,
+        itemTotal: f.itemTotal || 0,
+      };
+    });
   } else {
     // Legacy single-file synthesis
+    const totalPgs = docData.totalPages || 1;
+    const mode = docData.pageSelection?.mode || docData.pageRangeMode || 'all';
+    const fromPg = docData.pageSelection?.fromPage ?? docData.fromPage ?? 1;
+    const toPg = docData.pageSelection?.toPage ?? docData.toPage ?? totalPgs;
+    const calcPgs = docData.calculatedPages || docData.totalPages || (mode === 'custom' ? Math.max(1, toPg - fromPg + 1) : totalPgs);
+    const rangeStr = docData.pageRangeString || (mode === 'custom' ? `Pages ${fromPg}–${toPg} (${calcPgs} pgs)` : `All (${totalPgs} pgs)`);
+
     files = [
       {
         fileId: 'file_0',
         fileName: docData.fileName || 'document.pdf',
         fileUrl: docData.fileUrl || '',
         fileSize: docData.fileSize || 0,
-        totalPages: docData.totalPages || 1,
-        calculatedPages: docData.calculatedPages || docData.totalPages || 1,
+        totalPages: totalPgs,
+        calculatedPages: calcPgs,
+        pageSelection: {
+          mode,
+          fromPage: fromPg,
+          toPage: toPg,
+        },
+        pageRangeMode: mode,
+        fromPage: fromPg,
+        toPage: toPg,
+        pageRangeString: rangeStr,
         copies: docData.copies || 1,
         colorMode: docData.colorMode || 'bw',
+        colourMode: docData.colourMode || (docData.colorMode === 'color' ? 'color' : 'grayscale'),
         sides: docData.sides || 'single',
-        pageRangeMode: docData.pageRangeMode || 'all',
-        pageRangeString: docData.pageRangeString || `All (${docData.totalPages || 1} pgs)`,
         ratePerPage: docData.ratePerPage || 2,
         itemTotal: docData.totalAmount || 0,
       },

@@ -65,6 +65,13 @@ export default function ShopView({ onOrderCreated }) {
       alert('Please upload at least one PDF document before proceeding.');
       return;
     }
+    const hasInvalidRanges = filesList.some(
+      (f) => f.rangeValidation && f.rangeValidation.isValid === false
+    );
+    if (hasInvalidRanges) {
+      alert('One or more uploaded documents have an invalid page range. Please correct the page ranges before proceeding.');
+      return;
+    }
     const finalAmount = typeof validatedAmount === 'number' ? validatedAmount : pricingSnapshot.totalAmount;
     if (finalAmount <= 0) {
       alert('Order total must be greater than ₹0.');

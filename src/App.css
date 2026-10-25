@@ -886,6 +886,334 @@ body::before {
 }
 
 /* --------------------------------------------------------------------------
+ * 9.1 PER-FILE INDEPENDENT CONFIGURATION CARDS
+ * -------------------------------------------------------------------------- */
+.quick-presets-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.65rem 0.85rem;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  margin-bottom: 1rem;
+}
+
+.presets-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.presets-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.preset-pill-btn {
+  background: #ffffff;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-full);
+  padding: 0.25rem 0.65rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-main);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.preset-pill-btn:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: var(--primary-light);
+}
+
+.per-file-cards-container {
+  display: flex;
+  flex-direction: column;
+  gap: 1.15rem;
+}
+
+.file-config-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  padding: 1.15rem 1.25rem;
+  box-shadow: var(--shadow-sm);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.file-config-card:hover {
+  border-color: #cbd5e1;
+  box-shadow: var(--shadow-md);
+}
+
+.file-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.85rem;
+}
+
+.file-badge-group {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.file-title-block {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.file-name-heading {
+  font-size: 0.96rem;
+  font-weight: 700;
+  color: var(--text-main);
+  margin: 0 0 0.25rem 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-meta-tags {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.file-meta-pill {
+  font-size: 0.76rem;
+  font-weight: 600;
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+  padding: 0.15rem 0.5rem;
+  border-radius: var(--radius-sm);
+}
+
+.file-type-pill {
+  font-size: 0.74rem;
+  font-weight: 700;
+  background: rgba(220, 38, 38, 0.08);
+  color: #dc2626;
+  border: 1px solid rgba(220, 38, 38, 0.2);
+  padding: 0.12rem 0.45rem;
+  border-radius: var(--radius-sm);
+}
+
+.file-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-shrink: 0;
+}
+
+.file-cost-tag {
+  font-family: var(--font-mono);
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: var(--primary);
+}
+
+.file-section-block {
+  margin-top: 1rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--border-light);
+}
+
+.file-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.55rem;
+}
+
+.section-label {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--text-main);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.selected-count-badge {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--primary);
+  background: var(--primary-light);
+  padding: 0.2rem 0.65rem;
+  border-radius: var(--radius-full);
+}
+
+.selected-count-badge.error {
+  color: var(--danger);
+  background: var(--danger-light);
+}
+
+.page-mode-segmented {
+  margin-bottom: 0.65rem;
+}
+
+.custom-range-inputs-container {
+  padding: 0.75rem 0.9rem;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  margin-top: 0.5rem;
+}
+
+.range-inputs-grid {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.range-input-item {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.range-sublabel {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.range-num-input {
+  width: 74px;
+  height: 38px;
+  text-align: center;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text-main);
+  background: #ffffff;
+  outline: none;
+  transition: border-color var(--transition-fast);
+}
+
+.range-num-input:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
+}
+
+.range-num-input.input-error {
+  border-color: var(--danger);
+  background: #fff5f5;
+  color: var(--danger);
+}
+
+.range-input-separator {
+  color: var(--text-muted);
+  font-weight: 700;
+}
+
+.range-preview-summary {
+  margin-left: auto;
+  font-size: 0.8rem;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.summary-label {
+  color: var(--text-muted);
+}
+
+.summary-val {
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.file-validation-error-alert {
+  margin-top: 0.65rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--danger-light);
+  color: var(--danger);
+  border: 1px solid #fecaca;
+  border-radius: var(--radius-sm);
+  font-size: 0.78rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.file-preferences-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.85rem;
+  margin-top: 0.9rem;
+  padding-top: 0.85rem;
+  border-top: 1px dashed var(--border-light);
+}
+
+.file-pref-col {
+  display: flex;
+  flex-direction: column;
+}
+
+.pref-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  margin-bottom: 0.35rem;
+}
+
+.compact-segmented {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.4rem;
+}
+
+.compact-segmented .segmented-btn {
+  padding: 0.5rem 0.6rem;
+  min-height: 40px;
+}
+
+.compact-segmented .option-title {
+  font-size: 0.82rem;
+}
+
+.compact-segmented .option-subtitle {
+  font-size: 0.7rem;
+}
+
+.file-subtotal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.85rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--border-light);
+  font-size: 0.8rem;
+}
+
+.subtotal-calc-text {
+  color: var(--text-muted);
+}
+
+.subtotal-amount-tag {
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  font-weight: 800;
+  color: var(--primary);
+}
+
+/* --------------------------------------------------------------------------
  * 10. LIVE PRICE BREAKDOWN CARD (STICKY)
  * -------------------------------------------------------------------------- */
 .price-card {
@@ -2025,6 +2353,59 @@ body::before {
   /* File items */
   .active-file-card {
     padding: 0.75rem 0.85rem;
+  }
+
+  .file-config-card {
+    padding: 0.85rem 0.9rem;
+  }
+
+  .file-card-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.65rem;
+  }
+
+  .file-card-actions {
+    justify-content: space-between;
+    width: 100%;
+  }
+
+  .range-inputs-grid {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.5rem;
+  }
+
+  .range-input-item {
+    justify-content: space-between;
+    width: 100%;
+  }
+
+  .range-num-input {
+    width: 90px;
+    height: 42px;
+    font-size: 16px;
+  }
+
+  .range-input-separator {
+    display: none;
+  }
+
+  .range-preview-summary {
+    margin-left: 0;
+    width: 100%;
+    justify-content: center;
+  }
+
+  .file-preferences-grid {
+    grid-template-columns: 1fr;
+    gap: 0.75rem;
+  }
+
+  .file-subtotal-footer {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.35rem;
   }
 
   .file-header-row {
